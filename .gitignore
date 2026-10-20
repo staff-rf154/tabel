@@ -1,0 +1,13 @@
+.env
+*.env.local
+node_modules/
+dist/
+*.log
+.DS_Store
+backend/server
+infra/garage/garage.toml
+
+# Сгенерированные TypeScript-файлы
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts

@@ -1,0 +1,166 @@
+:root {
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: #1f2937;
+  background: #f8fafc;
+}
+
+body {
+  margin: 0;
+}
+
+input {
+  padding: 9px 11px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  font-size: 14px;
+  font-family: inherit;
+}
+
+button {
+  padding: 9px 14px;
+  border: 1px solid #2563eb;
+  border-radius: 8px;
+  background: #2563eb;
+  color: #fff;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.app {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 32px 20px;
+}
+
+.app.wide {
+  max-width: 960px;
+}
+
+.app h1 {
+  font-size: 26px;
+  margin: 0 0 8px;
+}
+
+.app p {
+  color: #4b5563;
+}
+
+.ok {
+  color: #047857;
+}
+
+.error {
+  color: #b91c1c;
+}
+
+.topline {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.topline .who {
+  margin-right: 12px;
+  color: #64748b;
+}
+
+.app form {
+  display: grid;
+  gap: 16px;
+  max-width: 420px;
+}
+
+.app label {
+  display: grid;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.scanner {
+  display: grid;
+  gap: 16px;
+}
+
+.card {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 18px;
+}
+
+.card h2 {
+  margin-top: 0;
+  font-size: 18px;
+}
+
+.video {
+  width: 100%;
+  max-height: 340px;
+  border-radius: 10px;
+  background: #0f172a;
+  object-fit: cover;
+}
+
+.video.hidden {
+  display: none;
+}
+
+.manual {
+  display: flex;
+  gap: 10px;
+  align-items: end;
+  max-width: none;
+  margin-top: 12px;
+}
+
+.manual label {
+  flex: 1;
+}
+
+.actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.details {
+  display: grid;
+  grid-template-columns: 170px 1fr;
+  gap: 6px 16px;
+  margin: 0 0 12px;
+}
+
+.details dt {
+  font-weight: 600;
+}
+
+.details dd {
+  margin: 0;
+  color: #475569;
+}
+
+.log {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 6px;
+  font-size: 14px;
+}
+
+.log .mono,
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  word-break: break-all;
+}

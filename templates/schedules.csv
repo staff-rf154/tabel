@@ -1,0 +1,4 @@
+employee_number,pattern_type,workdays,start_time,end_time,valid_from,valid_to
+E-0001,custom,1-5,09:00,18:00,2026-01-01,
+E-0002,5/2,1-5,10:00,19:00,2026-01-01,
+E-0003,custom,2-6,08:00,17:00,2026-01-01,2026-12-31

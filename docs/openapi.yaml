@@ -1,0 +1,2098 @@
+openapi: 3.1.0
+info:
+  title: Tabel API
+  description: >-
+    REST API системы табелирования сотрудников «Табель» (QR-учёт рабочего времени).
+    Аутентификация — JWT (access/refresh) для пользователей и OAuth 2.0
+    client_credentials для внешних систем выгрузки и интеграции с 1С.
+    Часовой пояс бизнес-логики, графиков и отчётов — Asia/Novosibirsk (UTC+7).
+    Время в API передаётся в RFC3339; серверные метки содержат часовой пояс.
+  version: 1.1.0
+  contact:
+    name: Табель
+servers:
+  - url: http://localhost:8080
+    description: Локальная разработка
+tags:
+  - name: system
+    description: Служебные эндпоинты
+  - name: setup
+    description: Первичная установка и настройка (SQLite)
+  - name: auth
+    description: Аутентификация и профиль
+  - name: marks
+    description: Отметки сотрудников
+  - name: schedules
+    description: Графики работы
+  - name: qr
+    description: QR-токены (статические и бумажные)
+  - name: delegations
+    description: Делегирование прав оператора
+  - name: notifications
+    description: Уведомления
+  - name: audit
+    description: Журнал аудита
+  - name: admin
+    description: Администрирование
+  - name: export
+    description: Выгрузка для внешних систем
+  - name: oauth
+    description: OAuth 2.0 (client_credentials)
+  - name: integration-1c
+    description: Обмен справочниками и отметками с 1С:УПП и 1С:ЗУП (OAuth client_credentials)
+
+security:
+  - bearerAuth: []
+
+paths:
+  /health:
+    get:
+      tags: [system]
+      summary: Проверка работоспособности сервиса (liveness)
+      operationId: getHealth
+      security: []
+      responses:
+        "200":
+          description: Сервис работает
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+  /ready:
+    get:
+      tags: [system]
+      summary: Проверка готовности (БД и Redis)
+      operationId: getReady
+      security: []
+      responses:
+        "200":
+          description: Все зависимости доступны
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ready }
+        "503":
+          description: Одна из зависимостей недоступна или система не настроена
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReadyError" }
+
+  /setup/status:
+    get:
+      tags: [setup]
+      summary: Состояние первичной установки
+      operationId: getSetupStatus
+      security: []
+      responses:
+        "200":
+          description: Текущее состояние
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SetupStatus" }
+  /setup/test-db:
+    post:
+      tags: [setup]
+      summary: Проверить подключение к PostgreSQL
+      operationId: testDatabase
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [database_url]
+              properties:
+                database_url: { type: string, example: "postgres://tabel:secret@pgbouncer:5432/tabel?sslmode=disable" }
+      responses:
+        "200":
+          description: Подключение успешно
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+        "400":
+          description: Не удалось подключиться
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: Система уже установлена
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /setup/save:
+    post:
+      tags: [setup]
+      summary: Сохранить параметры подключения и применить миграции
+      operationId: saveSetup
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SetupParams" }
+      responses:
+        "200":
+          description: Параметры сохранены, миграции применены
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: saved }
+                  migrated: { type: boolean, example: true }
+        "400":
+          description: Некорректные параметры или БД недоступна
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: Система уже установлена
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /setup/complete:
+    post:
+      tags: [setup]
+      summary: Завершить установку и зафиксировать профиль администратора
+      operationId: completeSetup
+      security: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                main_admin_email: { type: string, format: email }
+                support_phone: { type: string }
+                admin_login: { type: string, description: Логин главного администратора (необязательно) }
+                admin_password: { type: string, minLength: 5, description: Пароль главного администратора (необязательно) }
+      responses:
+        "200":
+          description: Установка завершена
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: installed }
+        "409":
+          description: Система уже установлена или подключение не настроено
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: Вход по логину и паролю
+      operationId: login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [login, password]
+              properties:
+                login: { type: string }
+                password: { type: string }
+      responses:
+        "200":
+          description: Токены доступа
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TokenPair" }
+        "401":
+          description: Неверные учётные данные
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "423":
+          description: Авторизация запрещена (заблокирован), возвращается телефон поддержки
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BlockedError" }
+  /auth/refresh:
+    post:
+      tags: [auth]
+      summary: Обновить access-токен
+      operationId: refresh
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token: { type: string }
+      responses:
+        "200":
+          description: Новая пара токенов
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TokenPair" }
+        "401":
+          description: Refresh-токен недействителен
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /auth/logout:
+    post:
+      tags: [auth]
+      summary: Выход (отзыв сессии)
+      operationId: logout
+      responses:
+        "204": { description: Сессия завершена }
+  /auth/register:
+    post:
+      tags: [auth]
+      summary: Регистрация сотрудника по QR-токену
+      operationId: registerByQR
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [qr_token, full_name, phone, password]
+              properties:
+                qr_token: { type: string, format: uuid }
+                signature: { type: string }
+                full_name: { type: string }
+                phone: { type: string }
+                password: { type: string, minLength: 5 }
+      responses:
+        "201":
+          description: Учётная запись создана
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserProfile" }
+        "400":
+          description: Некорректные данные или подпись QR
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: Учётная запись уже зарегистрирована
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "410":
+          description: QR-токен отозван или истёк
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /auth/password:
+    post:
+      tags: [auth]
+      summary: Сменить собственный пароль
+      operationId: changePassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password, new_password]
+              properties:
+                current_password: { type: string }
+                new_password: { type: string, minLength: 5 }
+      responses:
+        "204": { description: Пароль изменён }
+        "400":
+          description: Пароль не соответствует политике
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /me:
+    get:
+      tags: [auth]
+      summary: Профиль текущего пользователя
+      operationId: getMe
+      responses:
+        "200":
+          description: Профиль
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserProfile" }
+
+  /me/qr:
+    get:
+      tags: [qr]
+      summary: Личный бессрочный QR сотрудника (создаётся автоматически)
+      operationId: getMyQR
+      responses:
+        "200":
+          description: Активный QR-токен
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/QRToken" }
+  /me/qr/rotate:
+    post:
+      tags: [qr]
+      summary: Сменить личный QR; старый отзывается с причиной «изменён сотрудником»
+      operationId: rotateMyQR
+      responses:
+        "201":
+          description: Новый QR-токен
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/QRToken" }
+  /me/qr.png:
+    get:
+      tags: [qr]
+      summary: PNG с личным QR-кодом
+      operationId: getMyQRImage
+      responses:
+        "200":
+          description: Изображение PNG
+          content:
+            image/png:
+              schema: { type: string, format: binary }
+  /mark:
+    post:
+      tags: [marks]
+      summary: Создать отметку (вход/выход)
+      operationId: createMark
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MarkCreate" }
+      responses:
+        "201":
+          description: Отметка создана
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Mark" }
+        "200":
+          description: Повторная доставка (идемпотентность) — возвращается ранее созданная отметка
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Mark" }
+        "422":
+          description: Недопустимый переход (invalid_transition)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /marks:
+    get:
+      tags: [marks]
+      summary: Список отметок текущего сотрудника
+      operationId: listMyMarks
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 1000 } }
+      responses:
+        "200":
+          description: Отметки
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Mark" }
+
+  /schedules:
+    get:
+      tags: [schedules]
+      summary: Активный график текущего сотрудника
+      description: Если график не задан, возвращается график по умолчанию 5/2, 09:00–18:00.
+      operationId: getMySchedule
+      responses:
+        "200":
+          description: Активный график или график по умолчанию
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Schedule" }
+        "404":
+          description: Пользователь не привязан к сотруднику
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /qr/{token}:
+    get:
+      tags: [qr]
+      summary: Проверить QR-токен (подпись + статус + сверка полей)
+      operationId: verifyQr
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Результат проверки
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/QrVerification" }
+        "404":
+          description: Токен не найден (token_status = not_found)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/QrVerification" }
+
+  /delegations:
+    get:
+      tags: [delegations]
+      summary: Список делегирований
+      operationId: listDelegations
+      responses:
+        "200":
+          description: Делегирования
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Delegation" }
+    post:
+      tags: [delegations]
+      summary: Запросить передачу прав оператора
+      operationId: createDelegation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [valid_until]
+              properties:
+                to_user_id: { type: string, format: uuid, description: Устаревший способ; используйте to_login. }
+                to_login: { type: string, description: Логин сотрудника, сгенерированный автоматически (ФамилияИ). }
+                valid_until: { type: string, format: date-time }
+      responses:
+        "201":
+          description: Запрос создан
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Delegation" }
+  /delegations/{id}/approve:
+    post:
+      tags: [delegations]
+      summary: Подтвердить делегирование (администратор)
+      operationId: approveDelegation
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Подтверждено
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Delegation" }
+  /delegations/{id}/reject:
+    post:
+      tags: [delegations]
+      summary: Отклонить делегирование (администратор)
+      operationId: rejectDelegation
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Отклонено
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Delegation" }
+  /delegations/{id}/revoke:
+    post:
+      tags: [delegations]
+      summary: Досрочно отозвать делегирование
+      operationId: revokeDelegation
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Отозвано
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Delegation" }
+
+  /notifications:
+    get:
+      tags: [notifications]
+      summary: Список уведомлений текущего пользователя
+      operationId: listNotifications
+      parameters:
+        - { name: unread_only, in: query, schema: { type: boolean, default: false } }
+        - { name: limit, in: query, schema: { type: integer, default: 50, maximum: 200 } }
+      responses:
+        "200":
+          description: Уведомления
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Notification" }
+  /notifications/{id}/read:
+    post:
+      tags: [notifications]
+      summary: Отметить уведомление прочитанным
+      operationId: readNotification
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "204": { description: Отмечено }
+
+  /admin/employees:
+    get:
+      tags: [admin]
+      summary: Справочник сотрудников
+      description: >
+        Сотрудник — центральная сущность учёта. Содержит табельный номер,
+        части ФИО (last_name, first_name, middle_name), вычисляемое full_name,
+        контакты, отдел (department_id), должность (position_id), даты приёма и
+        увольнения, признак активности. Должность хранится только ссылкой на
+        справочник positions; свободный текст position не принимается.
+        Поиск q ищет по ФИО, табельному номеру, телефону и email.
+      operationId: listEmployees
+      parameters:
+        - { name: q, in: query, schema: { type: string } }
+        - { name: is_active, in: query, schema: { type: boolean } }
+        - { name: limit, in: query, schema: { type: integer, default: 50, maximum: 500 } }
+        - { name: offset, in: query, schema: { type: integer, default: 0 } }
+      responses:
+        "200":
+          description: Список сотрудников
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Employee" }
+    post:
+      tags: [admin]
+      summary: Создать сотрудника
+      operationId: createEmployee
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EmployeeInput" }
+      responses:
+        "201":
+          description: Создан
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Employee" }
+  /admin/employees/{id}:
+    get:
+      tags: [admin]
+      summary: Карточка сотрудника
+      operationId: getEmployee
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Сотрудник
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Employee" }
+    patch:
+      tags: [admin]
+      summary: Изменить сотрудника
+      operationId: updateEmployee
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EmployeeInput" }
+      responses:
+        "200":
+          description: Обновлён
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Employee" }
+
+  /admin/employees/{id}/qr:
+    get:
+      tags: [qr]
+      summary: Получить личный статический QR сотрудника
+      description: >
+        Если активного статического QR нет, сервер создаёт его автоматически.
+        Повторный вызов возвращает существующий токен без ротации.
+      operationId: getEmployeeQr
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: QR-токен
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/QrToken" }
+        "404": { description: Сотрудник не найден }
+        "409": { description: Сотрудник деактивирован }
+  /admin/employees/{id}/qr.png:
+    get:
+      tags: [qr]
+      summary: Получить PNG личного QR сотрудника
+      description: Возвращает PNG QR-кода. При отсутствии активного токена сначала создаёт его.
+      operationId: getEmployeeQrPng
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: PNG-изображение
+          content:
+            image/png:
+              schema: { type: string, format: binary }
+        "404": { description: Сотрудник не найден }
+        "409": { description: Сотрудник деактивирован }
+  /admin/employees/{id}/qr/rotate:
+    post:
+      tags: [qr]
+      summary: Принудительно сменить личный QR сотрудника
+      description: Старый статический QR отзывается, создаётся новый.
+      operationId: rotateEmployeeQr
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "201":
+          description: Новый QR-токен
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/QrToken" }
+        "404": { description: Сотрудник не найден }
+        "409": { description: Сотрудник деактивирован }
+
+  /admin/schedules:
+    get:
+      tags: [admin]
+      summary: Графики работы
+      description: >
+        График задаёт паттерн (5/2, 2/2, custom), рабочие дни 1–7, время начала
+        и окончания, период действия. Локальное время и границы смен считаются
+        в Asia/Novosibirsk (UTC+7). Активный график — запись, действующая на
+        текущую дату; при отсутствии используется 5/2, 09:00–18:00.
+      operationId: listSchedules
+      parameters:
+        - { name: employee_id, in: query, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Графики
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Schedule" }
+    post:
+      tags: [admin]
+      summary: Создать график работы
+      operationId: createSchedule
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ScheduleInput" }
+      responses:
+        "201":
+          description: График создан
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Schedule" }
+        "400":
+          description: Некорректные данные
+        "404":
+          description: Сотрудник не найден
+        "409":
+          description: Сотрудник деактивирован или график пересекается по срокам
+  /admin/schedules/bulk:
+    post:
+      tags: [admin]
+      summary: Массово заменить активный график у выбранных сотрудников
+      operationId: bulkSchedules
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/ScheduleInput"
+                - type: object
+                  required: [employee_ids]
+                  properties:
+                    employee_ids:
+                      type: array
+                      items: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Отчёт по строкам
+  /admin/schedules/{id}:
+    patch:
+      tags: [admin]
+      summary: Изменить график работы
+      operationId: updateSchedule
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ScheduleInput" }
+      responses:
+        "200":
+          description: График сохранён
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Schedule" }
+        "400":
+          description: Некорректные данные
+        "404":
+          description: График не найден
+        "409":
+          description: График пересекается по срокам
+    delete:
+      tags: [admin]
+      summary: Удалить график работы
+      operationId: deleteSchedule
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: График удалён
+        "404":
+          description: График не найден
+  /admin/schedules/import:
+    post:
+      tags: [admin]
+      summary: Импорт графиков из CSV (предпросмотр или сохранение)
+      description: >
+        Колонки: employee_number (обязательна), pattern_type (5/2, 2/2, custom),
+        workdays (1-7; диапазоны 1-5, списки 1,3,5), start_time, end_time,
+        valid_from (алиас date_from), valid_to (алиас date_to). По умолчанию:
+        pattern_type=5/2, workdays=1-5, start_time=09:00, end_time=18:00,
+        valid_from=сегодня (Asia/Novosibirsk). Строки одного сотрудника не должны пересекаться
+        по срокам. commit заменяет активный набор графиков сотрудника; активной
+        становится запись, действующая на сегодня, иначе ближайшая будущая, иначе
+        последняя прошедшая.
+      operationId: importSchedules
+      parameters:
+        - { name: mode, in: query, schema: { type: string, enum: [preview, commit], default: preview } }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        "200":
+          description: Отчёт импорта
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ImportReport" }
+
+  /admin/qr/static:
+    post:
+      tags: [qr]
+      summary: Загрузить статический QR (JSON, подпись при загрузке)
+      description: Сервер дополняет payload данными сотрудника, подписывает его и
+        отзывает предыдущий активный статический токен сотрудника (ротация).
+      operationId: uploadStaticQr
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/QrUpload" }
+      responses:
+        "201":
+          description: QR принят
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/QrToken" }
+  /admin/qr/bulk:
+    post:
+      tags: [qr]
+      summary: Массовая загрузка QR (JSON/архив) с предпросмотром и подтверждением
+      description: 'Форматы файла: JSON-массив, объект с массивом items, NDJSON
+        или ZIP с JSON-файлами. В каждой записи обязателен payload и одно из полей
+        employee_id / employee_number. Режим preview не изменяет БД, commit
+        создаёт/ротирует статические QR. Максимум 5000 записей.'
+      operationId: bulkQr
+      parameters:
+        - { name: mode, in: query, schema: { type: string, enum: [preview, commit], default: preview } }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        "200":
+          description: Отчёт по строкам
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ImportReport" }
+  /admin/qr/employees/bulk:
+    post:
+      tags: [qr]
+      summary: Массово создать личные QR выбранным сотрудникам
+      description: >
+        Принимает до 500 UUID сотрудников. Для каждого: если активный статический
+        QR уже есть — возвращает existing без ротации; если нет — создаёт новый
+        (created). Деактивированные и отсутствующие сотрудники попадают в errors.
+        Операция идемпотентна по отношению к существующим активным QR.
+      operationId: bulkEmployeeQr
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [employee_ids]
+              properties:
+                employee_ids:
+                  type: array
+                  minItems: 1
+                  maxItems: 500
+                  items: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Отчёт по сотрудникам
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total: { type: integer }
+                  created: { type: integer }
+                  existing: { type: integer }
+                  errors: { type: integer }
+                  rows:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        employee_id: { type: string, format: uuid }
+                        employee_number: { type: string }
+                        full_name: { type: string }
+                        status: { type: string, enum: [created, existing, error] }
+                        qr_id: { type: string, format: uuid, nullable: true }
+                        reason: { type: string, nullable: true }
+        "400":
+          description: Некорректный список или больше 500 сотрудников
+
+  /admin/qr/paper:
+    post:
+      tags: [qr]
+      summary: Выдать бумажный QR-токен (на 1 месяц, Asia/Novosibirsk)
+      operationId: issuePaperQr
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [employee_id]
+              properties:
+                employee_id: { type: string, format: uuid }
+      responses:
+        "201":
+          description: Токен выдан
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/QrToken" }
+        "409":
+          description: У сотрудника уже есть активный бумажный токен
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /admin/qr/paper/{id}/revoke:
+    post:
+      tags: [qr]
+      summary: Отозвать бумажный QR-токен
+      operationId: revokePaperQr
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "204": { description: Отозван }
+  /admin/qr/paper/{id}/pdf:
+    get:
+      tags: [qr]
+      summary: Печатная форма PDF/A бумажного QR
+      description: PDF с XMP-метаданными PDF/A-1b, встроенными Unicode-шрифтами,
+        QR-кодом, данными сотрудника, сроком действия и инструкцией.
+      operationId: getPaperQrPdf
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: PDF-документ
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+
+  /admin/marks:
+    get:
+      tags: [admin]
+      summary: Отметки с фильтрами
+      operationId: listMarks
+      parameters:
+        - { name: employee_id, in: query, schema: { type: string, format: uuid } }
+        - { name: operator_id, in: query, schema: { type: string, format: uuid } }
+        - { name: department_id, in: query, schema: { type: string, format: uuid } }
+        - { name: position_id, in: query, schema: { type: string, format: uuid } }
+        - { name: q, in: query, description: Поиск по ФИО или табельному номеру (в интерфейсе — от 3 символов)., schema: { type: string, maxLength: 100 } }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: outside_office, in: query, schema: { type: boolean } }
+        - { name: mock_location, in: query, schema: { type: boolean } }
+        - { name: auto_closed_previous, in: query, schema: { type: boolean } }
+        - { name: overtime, in: query, schema: { type: boolean } }
+        - { name: qr_source, in: query, schema: { type: string, enum: [static, paper] } }
+        - { name: client_type, in: query, schema: { type: string, enum: [mobile, web] } }
+        - { name: qr_data_mismatch, in: query, schema: { type: boolean } }
+        - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 1000 } }
+        - { name: offset, in: query, schema: { type: integer, default: 0 } }
+      responses:
+        "200":
+          description: Отметки
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Mark" }
+  /admin/marks/export.csv:
+    get:
+      tags: [admin, export]
+      summary: Экспорт отметок в CSV
+      operationId: exportMarksCsv
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+      responses:
+        "200":
+          description: CSV-файл
+          content:
+            text/csv:
+              schema: { type: string }
+
+  /admin/departments:
+    get:
+      tags: [admin]
+      summary: Список отделов
+      description: >
+        Отдел — элемент справочника для группировки сотрудников и фильтрации
+        отметок/отчётов. Содержит UUID, название и признак активности.
+        Импорт CSV: колонка name; режимы preview/commit.
+      operationId: listDepartments
+      responses:
+        "200":
+          description: Отделы
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/DirectoryItem" }
+    post:
+      tags: [admin]
+      summary: Создать отдел
+      operationId: createDepartment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DirectoryInput" }
+      responses:
+        "201":
+          description: Отдел создан
+  /admin/departments/import:
+    post:
+      tags: [admin]
+      summary: Импорт отделов из CSV (колонка name)
+      operationId: importDepartments
+      parameters:
+        - { name: mode, in: query, schema: { type: string, enum: [preview, commit], default: preview } }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        "200":
+          description: Отчёт импорта
+  /admin/positions:
+    get:
+      tags: [admin]
+      summary: Список должностей
+      description: >
+        Должность — обязательный справочник для карточки сотрудника в веб-интерфейсе
+        и импорта. Содержит UUID, название и признак активности. Свободный текст
+        должности в employees больше не используется.
+      operationId: listPositions
+      responses:
+        "200":
+          description: Должности
+  /admin/positions/import:
+    post:
+      tags: [admin]
+      summary: Импорт должностей из CSV (колонка name)
+      operationId: importPositions
+      parameters:
+        - { name: mode, in: query, schema: { type: string, enum: [preview, commit], default: preview } }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        "200":
+          description: Отчёт импорта
+  /admin/offices:
+    get:
+      tags: [admin]
+      summary: Геозоны офисов
+      operationId: listOffices
+      responses:
+        "200":
+          description: Офисы
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Office" }
+    post:
+      tags: [admin]
+      summary: Создать геозону офиса
+      operationId: createOffice
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OfficeInput" }
+      responses:
+        "201":
+          description: Создано
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Office" }
+
+  /admin/offline-imports:
+    post:
+      tags: [admin, export]
+      summary: Загрузить CSV офлайн-импорта отметок
+      operationId: uploadOfflineImport
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        "200":
+          description: Отчёт импорта
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ImportReport" }
+
+  /admin/oauth/clients:
+    get:
+      tags: [admin, oauth]
+      summary: Список OAuth-клиентов
+      operationId: listOAuthClients
+      responses:
+        "200":
+          description: Клиенты
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/OAuthClient" }
+    post:
+      tags: [admin, oauth]
+      summary: Создать OAuth-клиента
+      operationId: createOAuthClient
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+      responses:
+        "201":
+          description: Клиент создан (секрет показывается один раз)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OAuthClientCreated" }
+  /admin/oauth/clients/{id}/rotate:
+    post:
+      tags: [admin, oauth]
+      summary: Ротировать секрет OAuth-клиента
+      operationId: rotateOAuthSecret
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Новый секрет
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OAuthClientCreated" }
+  /admin/oauth/clients/{id}/whitelist:
+    get:
+      tags: [admin, oauth]
+      summary: IP-whitelist клиента
+      operationId: listIpWhitelist
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Записи
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/IpWhitelistEntry" }
+    post:
+      tags: [admin, oauth]
+      summary: Добавить CIDR в IP-whitelist клиента
+      operationId: addIpWhitelist
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IpWhitelistInput" }
+      responses:
+        "201":
+          description: Добавлено
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IpWhitelistEntry" }
+
+  /admin/users:
+    get:
+      tags: [admin]
+      summary: Список пользователей
+      description: >
+        Пользователь — учётная запись для входа (сотрудник, оператор, администратор,
+        руководитель смены, директор, отдел кадров). Связан с сотрудником через
+        employee_id; логин уникален. Пароль хранится в виде хеша, блокировка
+        авторизации и смена роли выполняются отдельными admin-эндпоинтами.
+      operationId: listUsers
+      parameters:
+        - { name: role, in: query, schema: { type: string, enum: [employee, operator, admin, shift_lead, director, hr] } }
+        - { name: limit, in: query, schema: { type: integer, default: 50, maximum: 500 } }
+        - { name: offset, in: query, schema: { type: integer, default: 0 } }
+      responses:
+        "200":
+          description: Пользователи
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/User" }
+    post:
+      tags: [admin]
+      summary: Создать пользователя
+      description: >
+        Создаёт учётную запись с ролью employee, operator, admin, shift_lead,
+        director или hr. Для роли employee/operator можно привязать employee_id;
+        если логин не передан, для employee он генерируется из ФИО в формате
+        ФамилияИ. Пароль проверяется по политике сложности.
+      operationId: createUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password, role]
+              properties:
+                login: { type: string, description: "Обязателен, кроме employee с employee_id и автологином." }
+                password: { type: string, minLength: 5 }
+                role: { type: string, enum: [employee, operator, admin, shift_lead, director, hr] }
+                employee_id: { type: string, format: uuid, nullable: true }
+      responses:
+        "201":
+          description: Пользователь создан
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "400": { description: Некорректные роль, пароль или привязка к сотруднику }
+        "404": { description: Сотрудник не найден }
+        "409": { description: Логин уже занят }
+  /admin/users/{id}/block:
+    post:
+      tags: [admin]
+      summary: Запретить авторизацию пользователя
+      operationId: blockUser
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "204": { description: Авторизация запрещена }
+  /admin/users/{id}/unblock:
+    post:
+      tags: [admin]
+      summary: Разрешить авторизацию пользователя
+      operationId: unblockUser
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "204": { description: Авторизация разрешена }
+  /admin/users/{id}/role:
+    patch:
+      tags: [admin]
+      summary: Изменить роль пользователя
+      operationId: updateUserRole
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role: { type: string, enum: [employee, operator, admin, shift_lead, director, hr] }
+      responses:
+        "200":
+          description: Роль изменена
+        "409": { description: Главный администратор или последний администратор }
+  /admin/users/{id}/reset-registration:
+    post:
+      tags: [admin]
+      summary: Сбросить учётную запись (разрешить повторную регистрацию по QR)
+      operationId: resetRegistration
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "204": { description: Сброс выполнен }
+
+  /admin/profile:
+    get:
+      tags: [admin]
+      summary: Профиль главного администратора
+      operationId: getAdminProfile
+      responses:
+        "200":
+          description: Профиль
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  main_admin_email: { type: string, format: email }
+                  support_phone: { type: string }
+    put:
+      tags: [admin]
+      summary: Изменить профиль главного администратора
+      operationId: updateAdminProfile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                main_admin_email: { type: string, format: email }
+                support_phone: { type: string }
+      responses:
+        "200":
+          description: Обновлено
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  main_admin_email: { type: string, format: email }
+                  support_phone: { type: string }
+
+  /admin/audit:
+    get:
+      tags: [admin, audit]
+      summary: Журнал аудита
+      operationId: listAudit
+      parameters:
+        - { name: action, in: query, schema: { type: string } }
+        - { name: entity_type, in: query, schema: { type: string } }
+        - { name: entity_id, in: query, schema: { type: string } }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 1000 } }
+        - { name: offset, in: query, schema: { type: integer, default: 0 } }
+      responses:
+        "200":
+          description: Записи аудита
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/AuditEntry" }
+
+  /export/marks:
+    get:
+      tags: [export]
+      summary: Выгрузка отметок для внешней системы (пагинация по next_cursor)
+      operationId: exportMarks
+      security:
+        - oauth2: []
+      parameters:
+        - { name: since, in: query, schema: { type: string, format: date-time } }
+        - { name: cursor, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, default: 1000, maximum: 1000 } }
+      responses:
+        "200":
+          description: Страница отметок
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/ExportMark" }
+                  next_cursor: { type: string, nullable: true }
+        "401":
+          description: Не авторизован
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: IP не в whitelist
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /export/ack:
+    post:
+      tags: [export]
+      summary: Подтвердить получение отметок (идемпотентно по mark_id)
+      operationId: exportAck
+      security:
+        - oauth2: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mark_ids]
+              properties:
+                mark_ids:
+                  type: array
+                  items: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Подтверждено
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  acknowledged: { type: integer }
+
+  /integration/1c/departments:
+    get:
+      tags: [integration-1c]
+      summary: Справочник отделов для 1С:УПП/ЗУП
+      description: >
+        OAuth 2.0 (client_credentials). Возвращает все отделы, включая неактивные,
+        с UUID, названием и признаком активности. Используется для сопоставления
+        подразделений 1С с таблицей departments.
+      operationId: integration1cDepartments
+      security:
+        - oauth2: []
+      responses:
+        "200":
+          description: Отделы
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/DirectoryItem" }
+        "401": { description: Не авторизован }
+        "403": { description: IP не в whitelist }
+  /integration/1c/positions:
+    get:
+      tags: [integration-1c]
+      summary: Справочник должностей для 1С:УПП/ЗУП
+      operationId: integration1cPositions
+      security:
+        - oauth2: []
+      responses:
+        "200":
+          description: Должности
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/DirectoryItem" }
+        "401": { description: Не авторизован }
+        "403": { description: IP не в whitelist }
+  /integration/1c/employees:
+    get:
+      tags: [integration-1c]
+      summary: Сотрудники для 1С:ЗУП/УПП
+      description: >
+        Постраничная выгрузка сотрудников. Для сопоставления используйте
+        employee_number (табельный номер), UUID id и department_id/position_id.
+        Поля ФИО отдаются по частям и в виде full_name. Фильтр is_active
+        позволяет получать только действующих сотрудников.
+      operationId: integration1cEmployees
+      security:
+        - oauth2: []
+      parameters:
+        - { name: q, in: query, schema: { type: string }, description: Поиск по ФИО, номеру, телефону, email }
+        - { name: is_active, in: query, schema: { type: boolean } }
+        - { name: limit, in: query, schema: { type: integer, default: 500, maximum: 500 } }
+        - { name: offset, in: query, schema: { type: integer, default: 0 } }
+      responses:
+        "200":
+          description: Сотрудники
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Employee" }
+        "401": { description: Не авторизован }
+        "403": { description: IP не в whitelist }
+  /integration/1c/schedules:
+    get:
+      tags: [integration-1c]
+      summary: Графики работы для 1С:УПП/ЗУП
+      description: >
+        Выгрузка графиков. employee_id необязателен; без него возвращаются
+        графики всех сотрудников (до 1000). Время трактуется в Asia/Novosibirsk.
+      operationId: integration1cSchedules
+      security:
+        - oauth2: []
+      parameters:
+        - { name: employee_id, in: query, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Графики
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Schedule" }
+        "401": { description: Не авторизован }
+        "403": { description: IP не в whitelist }
+  /integration/1c/marks:
+    get:
+      tags: [integration-1c]
+      summary: Отметки для 1С:УПП/ЗУП
+      description: >
+        Синоним GET /export/marks для интеграции с 1С. Постраничная выгрузка по
+        since и cursor, подтверждение получения через POST /export/ack.
+        Возвращает employee_number, ФИО, тип события, серверное/клиентское время,
+        источник QR и тип клиента.
+      operationId: integration1cMarks
+      security:
+        - oauth2: []
+      parameters:
+        - { name: since, in: query, schema: { type: string, format: date-time } }
+        - { name: cursor, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, default: 1000, maximum: 1000 } }
+      responses:
+        "200":
+          description: Страница отметок
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/ExportMark" }
+                  next_cursor: { type: string, nullable: true }
+        "401": { description: Не авторизован }
+        "403": { description: IP не в whitelist }
+
+  /oauth/token:
+    post:
+      tags: [oauth, export]
+      summary: Получить access-токен (client_credentials)
+      operationId: oauthToken
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [grant_type, client_id, client_secret]
+              properties:
+                grant_type: { type: string, enum: [client_credentials] }
+                client_id: { type: string }
+                client_secret: { type: string }
+      responses:
+        "200":
+          description: Токен доступа
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token: { type: string }
+                  token_type: { type: string, example: Bearer }
+                  expires_in: { type: integer, example: 3600 }
+        "401":
+          description: Неверные client_id/client_secret
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /admin/employees/import:
+    post:
+      tags: [admin]
+      summary: Импорт сотрудников из CSV (preview/commit)
+      operationId: importEmployees
+      parameters:
+        - { name: mode, in: query, schema: { type: string, enum: [preview, commit], default: preview } }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        "200":
+          description: Отчёт об импорте
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rows_total: { type: integer }
+                  rows_ok: { type: integer }
+                  rows_error: { type: integer }
+                  rows:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        line: { type: integer }
+                        status: { type: string }
+                        reason: { type: string, nullable: true }
+  /admin/demo/seed:
+    post:
+      tags: [admin]
+      summary: Загрузить демонстрационные данные (10 сотрудников)
+      operationId: seedDemo
+      responses:
+        "200":
+          description: Загружено
+          content:
+            application/json:
+              schema: { type: object, properties: { seeded: { type: integer } } }
+  /admin/demo/clear:
+    post:
+      tags: [admin]
+      summary: Очистить демонстрационные данные
+      operationId: clearDemo
+      responses:
+        "200":
+          description: Удалено
+          content:
+            application/json:
+              schema: { type: object, properties: { removed: { type: integer } } }
+  /admin/mobile-builds:
+    get:
+      tags: [admin]
+      summary: Список мобильных сборок
+      operationId: listMobileBuilds
+      responses:
+        "200":
+          description: Сборки
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/MobileBuild" }
+    post:
+      tags: [admin]
+      summary: Загрузить мобильную сборку (.apk/.ipa)
+      operationId: uploadMobileBuild
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [platform, version, file]
+              properties:
+                platform: { type: string, enum: [android, ios] }
+                version: { type: string }
+                file: { type: string, format: binary }
+      responses:
+        "201":
+          description: Сборка загружена
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MobileBuild" }
+  /admin/mobile-builds/{id}:
+    delete:
+      tags: [admin]
+      summary: Удалить мобильную сборку
+      operationId: deleteMobileBuild
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "204": { description: Удалено }
+        "404": { description: Не найдено }
+  /mobile-builds:
+    get:
+      tags: [public]
+      summary: Публичный список активных мобильных сборок
+      operationId: publicMobileBuilds
+      security: []
+      responses:
+        "200":
+          description: Сборки
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/MobileBuild" }
+  /mobile-builds/{id}/download:
+    get:
+      tags: [public]
+      summary: Скачать мобильную сборку
+      operationId: downloadMobileBuild
+      security: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: Файл сборки }
+        "404": { description: Не найдено }
+  /reports/shifts:
+    get:
+      tags: [reports]
+      summary: Отчёт по сменам (роли shift_lead/director/hr/admin)
+      operationId: reportShifts
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: employee_id, in: query, schema: { type: string, format: uuid } }
+        - { name: employee_ids, in: query, schema: { type: string }, description: "Список UUID через запятую" }
+        - { name: position, in: query, schema: { type: string } }
+        - { name: format, in: query, schema: { type: string, enum: [json, csv] } }
+      responses:
+        "200": { description: Смены или CSV }
+        "403": { description: Недостаточно прав }
+  /reports/marks:
+    get:
+      tags: [reports]
+      summary: Отчёт по отметкам
+      operationId: reportMarks
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: employee_id, in: query, schema: { type: string, format: uuid } }
+        - { name: employee_ids, in: query, schema: { type: string } }
+        - { name: position, in: query, schema: { type: string } }
+        - { name: format, in: query, schema: { type: string, enum: [json, csv] } }
+      responses:
+        "200": { description: Отметки или CSV }
+        "403": { description: Недостаточно прав }
+  /reports/summary:
+    get:
+      tags: [reports]
+      summary: Сводный отчёт по сотрудникам
+      operationId: reportSummary
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: employee_id, in: query, schema: { type: string, format: uuid } }
+        - { name: employee_ids, in: query, schema: { type: string } }
+        - { name: position, in: query, schema: { type: string } }
+        - { name: format, in: query, schema: { type: string, enum: [json, csv] } }
+      responses:
+        "200": { description: Сводка или CSV }
+        "403": { description: Недостаточно прав }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    oauth2:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: /oauth/token
+          scopes:
+            export:marks: Выгрузка отметок
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, format: uuid }
+      description: Ключ идемпотентности операции
+  schemas:
+    MobileBuild:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        platform: { type: string, enum: [android, ios] }
+        version: { type: string }
+        filename: { type: string }
+        size_bytes: { type: integer }
+        is_active: { type: boolean }
+        created_at: { type: string, format: date-time }
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+        code: { type: string }
+    ReadyError:
+      type: object
+      properties:
+        status: { type: string, example: unavailable }
+        reason: { type: string, enum: [database, redis, not_configured] }
+    BlockedError:
+      type: object
+      properties:
+        error: { type: string }
+        support_phone: { type: string }
+    SetupStatus:
+      type: object
+      properties:
+        installed: { type: boolean }
+        db_configured: { type: boolean }
+        db_reachable: { type: boolean }
+        redis_configured: { type: boolean }
+    SetupParams:
+      type: object
+      required: [database_url, redis_addr]
+      properties:
+        database_url: { type: string }
+        redis_addr: { type: string }
+        redis_password: { type: string }
+        main_admin_email: { type: string, format: email }
+        support_phone: { type: string }
+    TokenPair:
+      type: object
+      properties:
+        access_token: { type: string }
+        refresh_token: { type: string }
+        token_type: { type: string, example: Bearer }
+        expires_in: { type: integer, example: 900 }
+    UserProfile:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        role: { type: string, enum: [employee, operator, admin] }
+        login: { type: string }
+        employee_id: { type: string, format: uuid, nullable: true }
+        full_name: { type: string, nullable: true }
+        position: { type: string, nullable: true }
+        employee_number: { type: string, nullable: true }
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        role: { type: string, enum: [employee, operator, admin, shift_lead, director, hr] }
+        login: { type: string }
+        employee_id: { type: string, format: uuid, nullable: true }
+        is_locked: { type: boolean }
+        auth_blocked: { type: boolean }
+        is_main_admin: { type: boolean }
+        registered_at: { type: string, format: date-time, nullable: true }
+        last_login_at: { type: string, format: date-time, nullable: true }
+        full_name: { type: string, nullable: true }
+        employee_number: { type: string, nullable: true }
+    Employee:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        employee_number: { type: string }
+        full_name: { type: string, description: Формируется автоматически из частей ФИО. }
+        last_name: { type: string, nullable: true }
+        first_name: { type: string, nullable: true }
+        middle_name: { type: string, nullable: true }
+        email: { type: string, nullable: true }
+        phone: { type: string, nullable: true }
+        position: { type: string, nullable: true, description: Название должности из справочника. }
+        department_id: { type: string, format: uuid, nullable: true }
+        position_id: { type: string, format: uuid, nullable: true }
+        is_active: { type: boolean }
+        hired_at: { type: string, format: date, nullable: true }
+        fired_at: { type: string, format: date, nullable: true }
+    EmployeeInput:
+      type: object
+      required: [employee_number, full_name]
+      properties:
+        employee_number: { type: string }
+        full_name: { type: string, description: Формируется автоматически из частей ФИО. }
+        last_name: { type: string, nullable: true }
+        first_name: { type: string, nullable: true }
+        middle_name: { type: string, nullable: true }
+        email: { type: string, nullable: true }
+        phone: { type: string, nullable: true }
+        department_id: { type: string, format: uuid, nullable: true }
+        position_id: { type: string, format: uuid, nullable: true, description: Значение из справочника должностей; в веб-интерфейсе поле обязательно. Свободный текст position больше не принимается. }
+        is_active: { type: boolean, default: true }
+        hired_at: { type: string, format: date, nullable: true }
+        fired_at: { type: string, format: date, nullable: true }
+    DirectoryItem:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        is_active: { type: boolean }
+    DirectoryInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        is_active: { type: boolean, default: true }
+    ScheduleInput:
+      type: object
+      required: [pattern_type, workdays, start_time, end_time, valid_from]
+      properties:
+        employee_id:
+          type: string
+          format: uuid
+          description: Обязателен при создании; при изменении игнорируется.
+        pattern_type: { type: string, enum: ["5/2", "2/2", custom] }
+        workdays: { type: array, items: { type: integer, minimum: 1, maximum: 7 } }
+        start_time: { type: string, example: "09:00" }
+        end_time: { type: string, example: "18:00" }
+        valid_from: { type: string, format: date }
+        valid_to: { type: string, format: date, nullable: true }
+        is_active: { type: boolean, default: true }
+    Schedule:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        employee_id: { type: string, format: uuid }
+        pattern_type: { type: string, enum: ["5/2", "2/2", custom] }
+        workdays: { type: array, items: { type: integer, minimum: 1, maximum: 7 } }
+        start_time: { type: string, example: "09:00" }
+        end_time: { type: string, example: "18:00" }
+        valid_from: { type: string, format: date }
+        valid_to: { type: string, format: date, nullable: true }
+        is_active: { type: boolean }
+    MarkCreate:
+      type: object
+      required: [qr_token, client_type]
+      description: >
+        event_type необязателен: если у сотрудника есть открытая смена,
+        определяется как check_out, иначе как check_in. Явный check_in при
+        открытой смене закрывает предыдущую смену автоматически (время закрытия —
+        плановое окончание смены, но не позже текущего момента) и создаёт
+        уведомление shift.auto_closed.
+      properties:
+        qr_token: { type: string, format: uuid }
+        signature: { type: string }
+        event_type:
+          type: string
+          enum: [check_in, check_out]
+          description: Необязателен; при отсутствии определяется по наличию открытой смены.
+        client_type: { type: string, enum: [mobile, web] }
+        timestamp_client: { type: string, format: date-time }
+        lat: { type: number, format: double, nullable: true }
+        lon: { type: number, format: double, nullable: true }
+        accuracy_m: { type: number, format: double, nullable: true }
+        location_age_sec: { type: integer, nullable: true }
+        device_os: { type: string, nullable: true }
+        device_os_version: { type: string, nullable: true }
+        device_model: { type: string, nullable: true }
+        app_version: { type: string, nullable: true }
+        mock_location: { type: boolean, default: false }
+    Mark:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        employee_id: { type: string, format: uuid }
+        operator_id: { type: string, format: uuid, nullable: true }
+        operator_number: { type: string, nullable: true }
+        event_type: { type: string, enum: [check_in, check_out] }
+        timestamp_client: { type: string, format: date-time, nullable: true }
+        timestamp_server: { type: string, format: date-time }
+        lat: { type: number, nullable: true }
+        lon: { type: number, nullable: true }
+        mock_location: { type: boolean }
+        outside_office: { type: boolean }
+        overtime: { type: boolean }
+        auto_closed_previous: { type: boolean }
+        qr_source: { type: string, enum: [static, paper], nullable: true }
+        qr_data_mismatch: { type: boolean }
+        client_type: { type: string, enum: [mobile, web], nullable: true }
+        shift_id: { type: string, format: uuid, nullable: true }
+    ExportMark:
+      type: object
+      properties:
+        mark_id: { type: string, format: uuid }
+        employee_number: { type: string }
+        employee_full_name: { type: string }
+        event_type: { type: string, enum: [check_in, check_out] }
+        timestamp_server: { type: string, format: date-time }
+        timestamp_client: { type: string, format: date-time, nullable: true }
+        operator_number: { type: string, nullable: true }
+        qr_source: { type: string, nullable: true }
+        client_type: { type: string, nullable: true }
+        is_test: { type: boolean }
+    QrToken:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        employee_id: { type: string, format: uuid }
+        type: { type: string, enum: [static, paper] }
+        token: { type: string, format: uuid }
+        signature: { type: string }
+        valid_from: { type: string, format: date, nullable: true }
+        valid_until: { type: string, format: date, nullable: true }
+        status: { type: string, enum: [active, revoked, expired] }
+        revoked_reason: { type: string, nullable: true }
+        payload:
+          type: object
+          additionalProperties: true
+          description: Полная полезная нагрузка, сохранённая в БД
+        qr_content:
+          type: string
+          description: Готовая строка для QR-кода (JSON с token, signature, payload)
+    QrUpload:
+      type: object
+      required: [employee_id, payload]
+      properties:
+        employee_id: { type: string, format: uuid }
+        payload:
+          type: object
+          additionalProperties: true
+        signature: { type: string }
+    QrVerification:
+      type: object
+      properties:
+        valid: { type: boolean }
+        token_status: { type: string, enum: [active, revoked, expired, not_found] }
+        signature_valid: { type: boolean }
+        employee_id: { type: string, format: uuid, nullable: true }
+        qr_data_mismatch: { type: boolean }
+    Delegation:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        from_user_id: { type: string, format: uuid }
+        to_user_id: { type: string, format: uuid }
+        status: { type: string, enum: [pending, approved, rejected, revoked, expired] }
+        requested_at: { type: string, format: date-time }
+        valid_until: { type: string, format: date-time }
+        decided_by: { type: string, format: uuid, nullable: true }
+        decided_at: { type: string, format: date-time, nullable: true }
+    Notification:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        type: { type: string }
+        title: { type: string }
+        body: { type: string, nullable: true }
+        payload: { type: object, additionalProperties: true, nullable: true }
+        target_user_id: { type: string, format: uuid, nullable: true }
+        is_read: { type: boolean }
+        created_at: { type: string, format: date-time }
+    Office:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        lat: { type: number, format: double }
+        lon: { type: number, format: double }
+        radius_m: { type: integer, default: 500 }
+        is_active: { type: boolean }
+    OfficeInput:
+      type: object
+      required: [name, lat, lon]
+      properties:
+        name: { type: string }
+        lat: { type: number, format: double }
+        lon: { type: number, format: double }
+        radius_m: { type: integer, default: 500 }
+        is_active: { type: boolean, default: true }
+    OAuthClient:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        client_id: { type: string }
+        name: { type: string, nullable: true }
+        is_active: { type: boolean }
+        secret_rotated_at: { type: string, format: date-time, nullable: true }
+        next_rotation_at: { type: string, format: date-time, nullable: true }
+    OAuthClientCreated:
+      allOf:
+        - $ref: "#/components/schemas/OAuthClient"
+        - type: object
+          properties:
+            client_secret: { type: string }
+    IpWhitelistEntry:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        oauth_client_id: { type: string, format: uuid }
+        cidr: { type: string, example: "203.0.113.0/24" }
+        description: { type: string, nullable: true }
+    IpWhitelistInput:
+      type: object
+      required: [cidr]
+      properties:
+        cidr: { type: string }
+        description: { type: string }
+    AuditEntry:
+      type: object
+      properties:
+        id: { type: integer }
+        actor_user_id: { type: string, format: uuid, nullable: true }
+        action: { type: string }
+        entity_type: { type: string, nullable: true }
+        entity_id: { type: string, nullable: true }
+        details: { type: object, additionalProperties: true, nullable: true }
+        ip: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+    ImportReport:
+      type: object
+      properties:
+        rows_total: { type: integer }
+        rows_ok: { type: integer }
+        rows_error: { type: integer }
+        rows:
+          type: array
+          items:
+            type: object
+            properties:
+              line: { type: integer }
+              status: { type: string, enum: [ok, error] }
+              reason: { type: string, nullable: true }
+
+security:
+  - bearerAuth: []
