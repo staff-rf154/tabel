@@ -107,7 +107,8 @@ class OfflineQueue {
   }
 
   String exportCsv(List<QueueItem> items) {
-    final buffer = StringBuffer('id,qr_token,event_type,timestamp_client,idempotency_key\r\n');
+    final buffer = StringBuffer(
+        'id,qr_token,event_type,timestamp_client,idempotency_key\r\n');
     for (final item in items) {
       buffer.writeln([
         item.id,
@@ -128,4 +129,5 @@ class OfflineQueue {
   }
 }
 
-Map<String, dynamic> decodeQueueJson(String raw) => jsonDecode(raw) as Map<String, dynamic>;
+Map<String, dynamic> decodeQueueJson(String raw) =>
+    jsonDecode(raw) as Map<String, dynamic>;

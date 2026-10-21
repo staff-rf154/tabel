@@ -89,3 +89,41 @@ export async function refresh(): Promise<boolean> {
   }
   return false;
 }
+
+export async function downloadFile(path: string, fallbackName: string): Promise<{ ok: boolean; error?: string }> {
+  const headers = new Headers();
+  const token = getToken();
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+  try {
+    const res = await fetch(`/api${path}`, { headers });
+    if (!res.ok) {
+      const text = await res.text();
+      let body: unknown = null;
+      if (text) {
+        try {
+          body = JSON.parse(text);
+        } catch {
+          body = text;
+        }
+      }
+      return { ok: false, error: errorText(body, `не удалось скачать файл (HTTP ${res.status})`) };
+    }
+    const disposition = res.headers.get("Content-Disposition") ?? "";
+    const match = /filename="?([^";]+)"?/i.exec(disposition);
+    const filename = match?.[1] ?? fallbackName;
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    return { ok: true };
+  } catch {
+    return { ok: false, error: "сетевая ошибка при скачивании файла" };
+  }
+}

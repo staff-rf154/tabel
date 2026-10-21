@@ -6,7 +6,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/server ./cmd/server
 
 FROM alpine:3.20
-RUN apk add --no-cache ca-certificates wget tzdata
+RUN apk add --no-cache ca-certificates wget tzdata postgresql16-client
 COPY --from=build /out/server /usr/local/bin/server
 EXPOSE 8080
 ENTRYPOINT ["server"]

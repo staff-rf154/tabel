@@ -15,12 +15,14 @@ class OperatorHome extends StatefulWidget {
     required this.api,
     required this.me,
     required this.storage,
+    required this.bootstrap,
     required this.onLogout,
   });
 
   final ApiClient api;
   final Me me;
   final AppStorage storage;
+  final MobileBootstrap bootstrap;
   final Future<void> Function() onLogout;
 
   @override
@@ -29,9 +31,23 @@ class OperatorHome extends StatefulWidget {
 
 class _OperatorHomeState extends State<OperatorHome> {
   late final OfflineQueue _queue = OfflineQueue(widget.storage);
+  late final List<MobileNavItem> _tabs = _buildTabs();
   int _index = 0;
 
-  static const _titles = ['Сканирование', 'Очередь', 'Передать права', 'Профиль'];
+  static const _knownTabs = {'scan', 'queue', 'delegations', 'profile'};
+
+  List<MobileNavItem> _buildTabs() {
+    final items = widget.bootstrap.navigation
+        .where((item) => _knownTabs.contains(item.key))
+        .toList();
+    if (items.isNotEmpty) return items;
+    return const [
+      MobileNavItem(key: 'scan', title: 'Скан', icon: 'qr_code_scanner'),
+      MobileNavItem(key: 'queue', title: 'Очередь', icon: 'cloud_queue'),
+      MobileNavItem(key: 'delegations', title: 'Права', icon: 'swap_horiz'),
+      MobileNavItem(key: 'profile', title: 'Профиль', icon: 'person'),
+    ];
+  }
 
   @override
   void initState() {
@@ -41,45 +57,74 @@ class _OperatorHomeState extends State<OperatorHome> {
 
   @override
   Widget build(BuildContext context) {
+    if (_tabs.isEmpty) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Табель')),
+        body: const Center(child: Text('Интерфейс оператора не настроен')),
+      );
+    }
+    final current = _tabs[_index < _tabs.length ? _index : _tabs.length - 1];
     return Scaffold(
-      appBar: AppBar(title: Text(_titles[_index])),
+      appBar: AppBar(title: Text(current.title)),
       body: IndexedStack(
         index: _index,
-        children: [
-          ScanScreen(api: widget.api, queue: _queue),
-          QueueScreen(api: widget.api, queue: _queue),
-          DelegateScreen(api: widget.api),
-          _ProfileTab(me: widget.me, onLogout: widget.onLogout),
-        ],
+        children: _tabs.map(_buildScreen).toList(),
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _index,
         onDestinationSelected: (value) => setState(() => _index = value),
-        destinations: [
-          const NavigationDestination(icon: Icon(Icons.qr_code_scanner), label: 'Скан'),
-          NavigationDestination(
-            icon: ValueListenableBuilder<int>(
-              valueListenable: _queue.count,
-              builder: (context, count, _) => Badge(
-                isLabelVisible: count > 0,
-                label: Text('$count'),
-                child: const Icon(Icons.cloud_queue),
-              ),
-            ),
-            label: 'Очередь',
-          ),
-          const NavigationDestination(icon: Icon(Icons.swap_horiz), label: 'Права'),
-          const NavigationDestination(icon: Icon(Icons.person), label: 'Профиль'),
-        ],
+        destinations: _tabs.map((item) {
+          return NavigationDestination(
+            icon: item.key == 'queue'
+                ? ValueListenableBuilder<int>(
+                    valueListenable: _queue.count,
+                    builder: (context, count, _) => Badge(
+                      isLabelVisible: count > 0,
+                      label: Text('$count'),
+                      child: Icon(_icon(item.key)),
+                    ),
+                  )
+                : Icon(_icon(item.key)),
+            label: item.title,
+          );
+        }).toList(),
       ),
     );
   }
+
+  Widget _buildScreen(MobileNavItem item) {
+    switch (item.key) {
+      case 'scan':
+        return ScanScreen(api: widget.api, queue: _queue);
+      case 'queue':
+        return QueueScreen(api: widget.api, queue: _queue);
+      case 'delegations':
+        return DelegateScreen(api: widget.api);
+      case 'profile':
+        return _ProfileTab(
+            me: widget.me,
+            bootstrap: widget.bootstrap,
+            onLogout: widget.onLogout);
+      default:
+        return Center(child: Text('Раздел «${item.title}» недоступен'));
+    }
+  }
+
+  IconData _icon(String key) => switch (key) {
+        'scan' => Icons.qr_code_scanner,
+        'queue' => Icons.cloud_queue,
+        'delegations' => Icons.swap_horiz,
+        'profile' => Icons.person,
+        _ => Icons.apps,
+      };
 }
 
 class _ProfileTab extends StatelessWidget {
-  const _ProfileTab({required this.me, required this.onLogout});
+  const _ProfileTab(
+      {required this.me, required this.bootstrap, required this.onLogout});
 
   final Me me;
+  final MobileBootstrap bootstrap;
   final Future<void> Function() onLogout;
 
   @override
@@ -91,11 +136,15 @@ class _ProfileTab extends StatelessWidget {
           child: ListTile(
             leading: const Icon(Icons.person),
             title: Text(me.fullName ?? me.login),
-            subtitle: Text(me.roleTitle),
+            subtitle: Text(bootstrap.roleTitle.isEmpty
+                ? me.roleTitle
+                : bootstrap.roleTitle),
           ),
         ),
         if (me.employeeNumber != null)
-          ListTile(title: const Text('Табельный номер'), subtitle: Text(me.employeeNumber!)),
+          ListTile(
+              title: const Text('Табельный номер'),
+              subtitle: Text(me.employeeNumber!)),
         const SizedBox(height: 8),
         const Padding(
           padding: EdgeInsets.symmetric(horizontal: 16),

@@ -1,7 +1,15 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
+import maplibregl from "maplibre-gl";
+import "maplibre-gl/dist/maplibre-gl.css";
 import { api, errorText } from "./api";
 import { patternLabel, roleLabel } from "./labels";
+import {
+  OFFLINE_MAP_STYLE,
+  officePointCollection,
+  officeZoneCollection,
+  type OfficeMapItem,
+} from "./mapStyle";
 
 type Message = { kind: "error" | "ok"; text: string } | null;
 
@@ -242,20 +250,129 @@ export function Employees() {
 
 /* ---------------- Офисы ---------------- */
 
-type Office = {
-  id: string;
-  name: string;
-  lat: number;
-  lon: number;
-  radius_m: number;
-  is_active: boolean;
-};
+type Office = OfficeMapItem;
 
 export function Offices() {
   const { items, loading, message, setMessage, reload } = useList<Office>("/admin/offices");
   const [form, setForm] = useState({ name: "", lat: "", lon: "", radius_m: "150" });
+  const [defaultRadius, setDefaultRadius] = useState("150");
   const [editing, setEditing] = useState("");
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    void (async () => {
+      const res = await api<{ default_office_radius_m: number }>("/admin/profile");
+      if (res.ok && res.body && res.body.default_office_radius_m > 0) {
+        const value = String(res.body.default_office_radius_m);
+        setDefaultRadius(value);
+        setForm((current) => current.lat === "" && current.lon === "" ? { ...current, radius_m: value } : current);
+      }
+    })();
+  }, []);
+  const [mapOpen, setMapOpen] = useState(true);
+  const [mapReady, setMapReady] = useState(false);
+  const mapContainerRef = useRef<HTMLDivElement | null>(null);
+  const mapRef = useRef<maplibregl.Map | null>(null);
+
+  useEffect(() => {
+    if (!mapOpen || !mapContainerRef.current || mapRef.current) return;
+    const first = items[0];
+    const map = new maplibregl.Map({
+      container: mapContainerRef.current,
+      style: OFFLINE_MAP_STYLE,
+      center: first ? [first.lon, first.lat] : [82.9204, 55.0302],
+      zoom: 14.5,
+      minZoom: 11,
+      maxZoom: 18.5,
+      maxBounds: [[82.20, 54.60], [83.60, 55.40]],
+      attributionControl: false,
+    });
+    mapRef.current = map;
+    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+    map.addControl(new maplibregl.ScaleControl({ unit: "metric" }), "bottom-left");
+    map.addControl(new maplibregl.AttributionControl({
+      compact: true,
+      customAttribution: "© OpenStreetMap contributors · OpenFreeMap",
+    }), "bottom-right");
+    map.on("load", () => {
+      map.addSource("office-points", { type: "geojson", data: officePointCollection([]) });
+      map.addSource("office-zones", { type: "geojson", data: officeZoneCollection([]) });
+      map.addLayer({
+        id: "office-zone-fill",
+        type: "fill",
+        source: "office-zones",
+        paint: {
+          "fill-color": ["case", ["get", "is_active"], "#1d4ed8", "#6b7280"],
+          "fill-opacity": 0.16,
+        },
+      });
+      map.addLayer({
+        id: "office-zone-line",
+        type: "line",
+        source: "office-zones",
+        paint: {
+          "line-color": ["case", ["get", "is_active"], "#1d4ed8", "#6b7280"],
+          "line-width": 2,
+          "line-dasharray": [3, 2],
+        },
+      });
+      map.addLayer({
+        id: "office-point-halo",
+        type: "circle",
+        source: "office-points",
+        paint: { "circle-radius": 10, "circle-color": "#ffffff", "circle-opacity": 0.95 },
+      });
+      map.addLayer({
+        id: "office-point",
+        type: "circle",
+        source: "office-points",
+        paint: {
+          "circle-radius": 7,
+          "circle-color": ["case", ["get", "is_active"], "#15539c", "#6b7280"],
+          "circle-stroke-color": "#ffffff",
+          "circle-stroke-width": 2,
+        },
+      });
+      map.addLayer({
+        id: "office-labels",
+        type: "symbol",
+        source: "office-points",
+        layout: {
+          "text-field": ["get", "name"],
+          "text-font": ["Noto Sans Bold"],
+          "text-size": 12,
+          "text-offset": [0, 1.4],
+          "text-anchor": "top",
+          "text-max-width": 10,
+        },
+        paint: {
+          "text-color": "#152238",
+          "text-halo-color": "#ffffff",
+          "text-halo-width": 2,
+        },
+      });
+      setMapReady(true);
+    });
+    return () => {
+      map.remove();
+      mapRef.current = null;
+      setMapReady(false);
+    };
+  }, [mapOpen]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+    const points = map.getSource("office-points") as maplibregl.GeoJSONSource | undefined;
+    const zones = map.getSource("office-zones") as maplibregl.GeoJSONSource | undefined;
+    points?.setData(officePointCollection(items) as GeoJSON.FeatureCollection);
+    zones?.setData(officeZoneCollection(items) as GeoJSON.FeatureCollection);
+    if (items.length > 0) {
+      const bounds = new maplibregl.LngLatBounds();
+      items.forEach((office) => bounds.extend([office.lon, office.lat]));
+      map.fitBounds(bounds, { padding: 70, maxZoom: 16, duration: 0 });
+    }
+  }, [items, mapReady]);
 
   function startEdit(office: Office) {
     setEditing(office.id);
@@ -270,7 +387,7 @@ export function Offices() {
 
   function resetForm() {
     setEditing("");
-    setForm({ name: "", lat: "", lon: "", radius_m: "150" });
+    setForm({ name: "", lat: "", lon: "", radius_m: defaultRadius });
   }
 
   async function submit(event: FormEvent) {
@@ -321,8 +438,20 @@ export function Offices() {
           {editing && <button type="button" className="secondary" onClick={resetForm}>Отмена</button>}
         </div>
       </form>
+      <div className="card">
+        <div className="map-card-header">
+          <div>
+            <h3>Карта офисов и зон отметки</h3>
+            <p className="hint">Синяя заливка — зона, в которой сотрудник может отметить приход или уход. Серая зона — неактивный офис. Для просмотра на Яндекс.Картах используйте ссылку в таблице.</p>
+          </div>
+          <button type="button" onClick={() => setMapOpen((value) => !value)}>
+            {mapOpen ? "Свернуть карту" : "Показать карту"}
+          </button>
+        </div>
+        {mapOpen && <div className="offline-map office-map" ref={mapContainerRef} />}
+      </div>
       <table>
-        <thead><tr><th>Название</th><th>Координаты</th><th>Радиус</th><th>Статус</th><th /></tr></thead>
+        <thead><tr><th>Название</th><th>Координаты</th><th>Радиус</th><th>Статус</th><th>Карта</th><th /></tr></thead>
         <tbody>
           {items.map((office) => (
             <tr key={office.id}>
@@ -330,13 +459,22 @@ export function Offices() {
               <td className="mono">{office.lat}, {office.lon}</td>
               <td>{office.radius_m} м</td>
               <td>{office.is_active ? "активен" : "неактивен"}</td>
+              <td>
+                <a
+                  href={`https://yandex.ru/maps/?ll=${office.lon}%2C${office.lat}&z=17&pt=${office.lon},${office.lat},pm2rdm`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Яндекс.Карты
+                </a>
+              </td>
               <td className="actions-cell">
                 <button type="button" onClick={() => startEdit(office)}>Изменить</button>
                 <button type="button" className="danger" onClick={() => void remove(office)}>Удалить</button>
               </td>
             </tr>
           ))}
-          {!loading && items.length === 0 && <tr><td colSpan={5}>Офисов нет</td></tr>}
+          {!loading && items.length === 0 && <tr><td colSpan={6}>Офисов нет</td></tr>}
         </tbody>
       </table>
       {loading && <p>Загрузка…</p>}
@@ -373,7 +511,9 @@ const usersPageSize = 20;
 
 export function Users() {
   const [page, setPage] = useState(0);
-  const path = `/admin/users?limit=${usersPageSize}&offset=${page * usersPageSize}`;
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const path = `/admin/users?limit=${usersPageSize}&offset=${page * usersPageSize}${debouncedSearch ? `&q=${encodeURIComponent(debouncedSearch)}` : ""}`;
   const { items, loading, message, setMessage, reload } = useList<User>(path);
   const employees = useList<EmployeeLite>("/admin/employees?limit=500");
   const [roleDrafts, setRoleDrafts] = useState<Record<string, string>>({});
@@ -385,6 +525,16 @@ export function Users() {
   const [passwordTarget, setPasswordTarget] = useState<User | null>(null);
   const [newPassword, setNewPassword] = useState("");
   const [passwordBusy, setPasswordBusy] = useState(false);
+
+  useEffect(() => {
+    const value = search.trim();
+    if (value.length < 3) {
+      setDebouncedSearch("");
+      return;
+    }
+    const timer = window.setTimeout(() => setDebouncedSearch(value), 250);
+    return () => window.clearTimeout(timer);
+  }, [search]);
 
   async function action(user: User, name: "block" | "unblock" | "reset-registration") {
     const res = await api(`/admin/users/${user.id}/${name}`, { method: "POST" });
@@ -469,6 +619,28 @@ export function Users() {
     <section>
       <h2>Пользователи</h2>
       <Notice message={message} />
+
+      <div className="toolbar">
+        <input
+          type="search"
+          value={search}
+          onChange={(e) => {
+            setSearch(e.target.value);
+            setPage(0);
+          }}
+          placeholder="Поиск по логину, ФИО или номеру — от 3 символов"
+          aria-label="Поиск пользователей"
+        />
+        {search !== "" && search.trim().length < 3 && <span className="hint">Введите ещё {3 - search.trim().length} симв.</span>}
+        {search !== "" && (
+          <button type="button" className="secondary" onClick={() => { setSearch(""); setPage(0); }}>
+            Очистить
+          </button>
+        )}
+      </div>
+      {debouncedSearch && (
+        <p className="hint">Фильтр: «{debouncedSearch}». Найдено на странице: {items.length}.</p>
+      )}
 
       <form className="grid" onSubmit={createUser}>
         {linkable ? (
@@ -592,6 +764,8 @@ type Schedule = {
   valid_from: string;
   valid_to: string | null;
   is_active: boolean;
+  employee_number?: string;
+  employee_full_name?: string;
 };
 
 type EmployeeLite = { id: string; employee_number: string; full_name: string };
@@ -612,6 +786,8 @@ const weekDays = [
 const patternOptions = [
   ["5/2", "5/2 (пн–пт)"],
   ["2/2", "2/2"],
+  ["4/2", "4/2"],
+  ["1/2", "1/2"],
   ["custom", "Индивидуальный"],
 ] as const;
 
@@ -652,8 +828,14 @@ type DirectoryItem = { id: string; name: string };
 
 type TargetType = "all" | "department" | "position" | "employee";
 
+const schedulesPageSize = 20;
+
 export function Schedules() {
-  const schedules = useList<Schedule>("/admin/schedules?limit=500");
+  const [scheduleQuery, setScheduleQuery] = useState("");
+  const [scheduleSearch, setScheduleSearch] = useState("");
+  const [schedulePage, setSchedulePage] = useState(0);
+  const schedulesPath = `/admin/schedules?limit=${schedulesPageSize}&offset=${schedulePage * schedulesPageSize}${scheduleSearch ? `&q=${encodeURIComponent(scheduleSearch)}` : ""}`;
+  const schedules = useList<Schedule>(schedulesPath);
   const templates = useList<ScheduleTemplate>("/admin/schedule-templates");
   const employees = useList<EmployeeLite>("/admin/employees?limit=500");
   const departments = useList<DirectoryItem>("/admin/departments");
@@ -677,6 +859,27 @@ export function Schedules() {
   function employeeText(id: string): string {
     const employee = employeeByID.get(id);
     return employee ? `${employee.employee_number} — ${employee.full_name}` : id;
+  }
+
+  function scheduleEmployeeText(schedule: Schedule): string {
+    const employee = employeeByID.get(schedule.employee_id);
+    if (employee) return `${employee.employee_number} — ${employee.full_name}`;
+    if (schedule.employee_number || schedule.employee_full_name) {
+      return `${schedule.employee_number ?? ""} — ${schedule.employee_full_name ?? ""}`.trim();
+    }
+    return schedule.employee_id;
+  }
+
+  function applyScheduleSearch(event: FormEvent) {
+    event.preventDefault();
+    setSchedulePage(0);
+    setScheduleSearch(scheduleQuery.trim());
+  }
+
+  function resetScheduleSearch() {
+    setScheduleQuery("");
+    setScheduleSearch("");
+    setSchedulePage(0);
   }
 
   function resetTemplate() {
@@ -783,14 +986,18 @@ export function Schedules() {
   }
 
   async function removeSchedule(schedule: Schedule) {
-    if (!confirm(`Удалить назначенный график сотрудника ${employeeText(schedule.employee_id)}?`)) return;
+    if (!confirm(`Удалить назначенный график сотрудника ${scheduleEmployeeText(schedule)}?`)) return;
     const res = await api(`/admin/schedules/${schedule.id}`, { method: "DELETE" });
     if (!res.ok) {
       setMessage({ kind: "error", text: errorText(res.body, "не удалось удалить график") });
       return;
     }
     setMessage({ kind: "ok", text: "График удалён" });
-    await schedules.reload();
+    if (schedules.items.length === 1 && schedulePage > 0) {
+      setSchedulePage((value) => Math.max(0, value - 1));
+    } else {
+      await schedules.reload();
+    }
   }
 
   function targetOptions() {
@@ -823,7 +1030,15 @@ export function Schedules() {
               value={templateForm.pattern_type}
               onChange={(e) => {
                 const pattern = e.target.value;
-                const workdays = pattern === "5/2" ? [1, 2, 3, 4, 5] : pattern === "2/2" ? [1, 2] : templateForm.workdays;
+                const workdays = pattern === "5/2"
+                  ? [1, 2, 3, 4, 5]
+                  : pattern === "2/2"
+                    ? [1, 2]
+                    : pattern === "4/2"
+                      ? [1, 2, 3, 4]
+                      : pattern === "1/2"
+                        ? [1]
+                        : templateForm.workdays;
                 setTemplateForm({ ...templateForm, pattern_type: pattern, workdays });
               }}
             >
@@ -908,12 +1123,26 @@ export function Schedules() {
       </table>
 
       <h3>Назначенные графики</h3>
+      <form className="toolbar" onSubmit={applyScheduleSearch}>
+        <input
+          placeholder="Поиск по табельному номеру или ФИО"
+          value={scheduleQuery}
+          onChange={(e) => setScheduleQuery(e.target.value)}
+          aria-label="Поиск графиков по сотруднику"
+        />
+        <button type="submit" disabled={schedules.loading}>Найти</button>
+        <button type="button" onClick={resetScheduleSearch}>Сбросить</button>
+        <button type="button" onClick={() => void schedules.reload()} disabled={schedules.loading}>Обновить</button>
+      </form>
+      {scheduleSearch && (
+        <p className="hint">Фильтр: «{scheduleSearch}». Найдено на странице: {schedules.items.length}.</p>
+      )}
       <table>
         <thead><tr><th>Сотрудник</th><th>Тип</th><th>Дни</th><th>Время</th><th>Срок действия</th><th>Статус</th><th /></tr></thead>
         <tbody>
           {schedules.items.map((schedule) => (
             <tr key={schedule.id}>
-              <td>{employeeText(schedule.employee_id)}</td>
+              <td>{scheduleEmployeeText(schedule)}</td>
               <td>{patternLabel(schedule.pattern_type)}</td>
               <td>{workdaysText(schedule.workdays)}</td>
               <td>{schedule.start_time}–{schedule.end_time}</td>
@@ -924,9 +1153,16 @@ export function Schedules() {
               </td>
             </tr>
           ))}
-          {!schedules.loading && schedules.items.length === 0 && <tr><td colSpan={7}>Графиков пока нет</td></tr>}
+          {!schedules.loading && schedules.items.length === 0 && (
+            <tr><td colSpan={7}>{scheduleSearch ? "Сотрудники с такими графиками не найдены" : "Графиков пока нет"}</td></tr>
+          )}
         </tbody>
       </table>
+      <div className="toolbar">
+        <button type="button" disabled={schedulePage === 0 || schedules.loading} onClick={() => setSchedulePage((value) => Math.max(0, value - 1))}>Назад</button>
+        <span>Страница {schedulePage + 1}</span>
+        <button type="button" disabled={schedules.items.length < schedulesPageSize || schedules.loading} onClick={() => setSchedulePage((value) => value + 1)}>Вперёд</button>
+      </div>
       {schedules.loading && <p>Загрузка…</p>}
     </section>
   );

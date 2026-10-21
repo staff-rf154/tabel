@@ -20,7 +20,8 @@ class ScanScreen extends StatefulWidget {
 }
 
 class _ScanFeedback {
-  const _ScanFeedback({required this.ok, required this.title, required this.detail});
+  const _ScanFeedback(
+      {required this.ok, required this.title, required this.detail});
 
   final bool ok;
   final String title;
@@ -28,7 +29,11 @@ class _ScanFeedback {
 }
 
 class _SessionScan {
-  const _SessionScan({required this.at, required this.ok, required this.title, required this.detail});
+  const _SessionScan(
+      {required this.at,
+      required this.ok,
+      required this.title,
+      required this.detail});
 
   final DateTime at;
   final bool ok;
@@ -63,7 +68,8 @@ class _ScanScreenState extends State<ScanScreen> {
 
   String? _extractToken(String raw) {
     final trimmed = raw.trim();
-    final uuidPattern = RegExp(r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}');
+    final uuidPattern = RegExp(
+        r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}');
     if (RegExp(r'^[0-9a-fA-F-]{36}$').hasMatch(trimmed)) {
       return trimmed.toLowerCase();
     }
@@ -96,11 +102,15 @@ class _ScanScreenState extends State<ScanScreen> {
     }
   }
 
-  void _showFeedback({required bool ok, required String title, required String detail}) {
+  void _showFeedback(
+      {required bool ok, required String title, required String detail}) {
     _resetTimer?.cancel();
     setState(() {
       _feedback = _ScanFeedback(ok: ok, title: title, detail: detail);
-      _history.insert(0, _SessionScan(at: DateTime.now(), ok: ok, title: title, detail: detail));
+      _history.insert(
+          0,
+          _SessionScan(
+              at: DateTime.now(), ok: ok, title: title, detail: detail));
       if (_history.length > 20) _history.removeRange(20, _history.length);
       _busy = false;
     });
@@ -113,17 +123,23 @@ class _ScanScreenState extends State<ScanScreen> {
 
   Future<void> _handleDetect(BarcodeCapture capture) async {
     if (_busy || _feedback != null) return;
-    final raw = capture.barcodes.isEmpty ? null : capture.barcodes.first.rawValue;
+    final raw =
+        capture.barcodes.isEmpty ? null : capture.barcodes.first.rawValue;
     if (raw == null || raw.isEmpty) return;
     final now = DateTime.now();
-    if (_lastRaw == raw && _lastScan != null && now.difference(_lastScan!) < const Duration(seconds: 8)) {
+    if (_lastRaw == raw &&
+        _lastScan != null &&
+        now.difference(_lastScan!) < const Duration(seconds: 8)) {
       return;
     }
     _lastRaw = raw;
     _lastScan = now;
     final token = _extractToken(raw);
     if (token == null) {
-      _showFeedback(ok: false, title: 'ОШИБКА', detail: 'QR-код не содержит корректный токен');
+      _showFeedback(
+          ok: false,
+          title: 'ОШИБКА',
+          detail: 'QR-код не содержит корректный токен');
       return;
     }
     await _process(token);
@@ -133,7 +149,10 @@ class _ScanScreenState extends State<ScanScreen> {
     if (_busy) return;
     final pending = await widget.queue.all();
     if (pending.isNotEmpty) {
-      _showFeedback(ok: false, title: 'ОШИБКА', detail: 'Сначала отправьте офлайн-очередь ($pending)');
+      _showFeedback(
+          ok: false,
+          title: 'ОШИБКА',
+          detail: 'Сначала отправьте офлайн-очередь ($pending)');
       return;
     }
 
@@ -146,7 +165,8 @@ class _ScanScreenState extends State<ScanScreen> {
     try {
       final verification = await widget.api.verifyQr(token);
       if (!verification.valid) {
-        final reason = verification.reason == null ? '' : ' (${verification.reason})';
+        final reason =
+            verification.reason == null ? '' : ' (${verification.reason})';
         _showFeedback(
           ok: false,
           title: 'ОШИБКА',
@@ -170,7 +190,8 @@ class _ScanScreenState extends State<ScanScreen> {
         mockLocation: device.mockLocation,
       );
       if (!mounted) return;
-      final employee = verification.fullName ?? verification.employeeNumber ?? 'Сотрудник';
+      final employee =
+          verification.fullName ?? verification.employeeNumber ?? 'Сотрудник';
       _showFeedback(
         ok: true,
         title: 'OK · ${mark.eventTitle}',
@@ -189,7 +210,10 @@ class _ScanScreenState extends State<ScanScreen> {
             accuracy: device.accuracy,
             locationAgeSec: device.locationAgeSec,
           ));
-          _showFeedback(ok: false, title: 'ОШИБКА', detail: 'Нет связи. Отметка сохранена в офлайн-очередь');
+          _showFeedback(
+              ok: false,
+              title: 'ОШИБКА',
+              detail: 'Нет связи. Отметка сохранена в офлайн-очередь');
         } catch (_) {
           _showFeedback(ok: false, title: 'ОШИБКА', detail: error.message);
         }
@@ -197,7 +221,10 @@ class _ScanScreenState extends State<ScanScreen> {
         _showFeedback(ok: false, title: 'ОШИБКА', detail: error.message);
       }
     } catch (_) {
-      if (mounted) _showFeedback(ok: false, title: 'ОШИБКА', detail: 'Не удалось отправить отметку');
+      if (mounted) {
+        _showFeedback(
+            ok: false, title: 'ОШИБКА', detail: 'Не удалось отправить отметку');
+      }
     } finally {
       if (mounted && _feedback == null) setState(() => _busy = false);
     }
@@ -218,7 +245,8 @@ class _ScanScreenState extends State<ScanScreen> {
                 child: ListTile(
                   leading: const Icon(Icons.cloud_off),
                   title: Text('В офлайн-очереди $pending отметок'),
-                  subtitle: const Text('Отправьте очередь, чтобы продолжить сканирование'),
+                  subtitle: const Text(
+                      'Отправьте очередь, чтобы продолжить сканирование'),
                 ),
               ),
             Container(
@@ -229,7 +257,8 @@ class _ScanScreenState extends State<ScanScreen> {
                 border: feedback == null
                     ? null
                     : Border.all(
-                        color: feedback.ok ? Colors.greenAccent : Colors.redAccent,
+                        color:
+                            feedback.ok ? Colors.greenAccent : Colors.redAccent,
                         width: 4,
                       ),
               ),
@@ -244,11 +273,15 @@ class _ScanScreenState extends State<ScanScreen> {
                   if (_busy && feedback == null)
                     const ColoredBox(
                       color: Colors.black54,
-                      child: Center(child: CircularProgressIndicator(color: Colors.white)),
+                      child: Center(
+                          child:
+                              CircularProgressIndicator(color: Colors.white)),
                     ),
                   if (feedback != null)
                     ColoredBox(
-                      color: feedback.ok ? Colors.green.withOpacity(0.88) : Colors.red.withOpacity(0.88),
+                      color: feedback.ok
+                          ? Colors.green.withOpacity(0.88)
+                          : Colors.red.withOpacity(0.88),
                       child: Center(
                         child: Padding(
                           padding: const EdgeInsets.all(20),
@@ -264,13 +297,17 @@ class _ScanScreenState extends State<ScanScreen> {
                               Text(
                                 feedback.title,
                                 textAlign: TextAlign.center,
-                                style: const TextStyle(color: Colors.white, fontSize: 26, fontWeight: FontWeight.bold),
+                                style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 26,
+                                    fontWeight: FontWeight.bold),
                               ),
                               const SizedBox(height: 6),
                               Text(
                                 feedback.detail,
                                 textAlign: TextAlign.center,
-                                style: const TextStyle(color: Colors.white, fontSize: 15),
+                                style: const TextStyle(
+                                    color: Colors.white, fontSize: 15),
                               ),
                             ],
                           ),
@@ -286,7 +323,8 @@ class _ScanScreenState extends State<ScanScreen> {
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 16),
-            Text('Последние сканирования', style: Theme.of(context).textTheme.titleMedium),
+            Text('Последние сканирования',
+                style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 8),
             if (_history.isEmpty)
               const Card(

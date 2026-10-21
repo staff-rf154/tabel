@@ -555,23 +555,8 @@ func (s *Server) handleIssuePaperQR(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	now := time.Now().In(shift.NovosibirskZone)
-	validFrom := now.Format("2006-01-02")
-	validUntil := now.AddDate(0, 1, 0).Format("2006-01-02")
-	token := uuid.NewString()
-	payload, err := buildPayload(nil, employee, token, "paper", &validFrom, &validUntil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "не удалось сформировать payload")
-		return
-	}
-	signature, err := s.qrMgr.Sign(payload)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "не удалось подписать QR-токен")
-		return
-	}
-
 	principal, _ := principalFrom(r.Context())
-	created, err := rp.IssuePaperQR(r.Context(), employee.ID, token, string(payload), signature, validFrom, validUntil, principal.UserID)
+	created, err := s.issuePaperQR(r.Context(), rp, employee, principal.UserID)
 	switch {
 	case errors.Is(err, repo.ErrActivePaperQRExists):
 		writeError(w, http.StatusConflict, "у сотрудника уже есть активный бумажный QR-токен")
@@ -583,13 +568,50 @@ func (s *Server) handleIssuePaperQR(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "не удалось выдать бумажный QR-токен")
 		return
 	}
-
 	s.audit(r, rp, &principal.UserID, "qr.paper_issue", "qr_token", created.ID, map[string]any{
 		"employee_id": employee.ID,
-		"valid_from":  validFrom,
-		"valid_until": validUntil,
+		"valid_from":  optionalString(created.ValidFrom),
+		"valid_until": optionalString(created.ValidUntil),
 	})
 	writeJSON(w, http.StatusCreated, newQRTokenResponse(created))
+}
+
+func (s *Server) issuePaperQR(ctx context.Context, rp *repo.Repo, employee repo.Employee, userID string) (repo.QRToken, error) {
+	now := time.Now().In(shift.NovosibirskZone)
+	validFrom := now.Format("2006-01-02")
+	validDays := s.adminProfile().PaperQRValidDays
+	if validDays < 1 {
+		validDays = 30
+	}
+	validUntil := now.AddDate(0, 0, validDays).Format("2006-01-02")
+	token := uuid.NewString()
+	payload, err := buildPayload(nil, employee, token, "paper", &validFrom, &validUntil)
+	if err != nil {
+		return repo.QRToken{}, err
+	}
+	signature, err := s.qrMgr.Sign(payload)
+	if err != nil {
+		return repo.QRToken{}, err
+	}
+	return rp.IssuePaperQR(ctx, employee.ID, token, string(payload), signature, validFrom, validUntil, userID)
+}
+
+func (s *Server) paperPassData(token repo.QRToken, profile adminProfileResponse, content string) pdf.PaperQRData {
+	return pdf.PaperQRData{
+		EmployeeName:   token.FullName,
+		EmployeeNumber: token.EmployeeNum,
+		Position:       optionalString(token.Position),
+		Department:     optionalString(token.Department),
+		CompanyName:    profile.CompanyName,
+		Token:          token.Token,
+		ValidFrom:      optionalString(token.ValidFrom),
+		ValidUntil:     optionalString(token.ValidUntil),
+		Status:         effectiveQRStatus(token),
+		QRContent:      content,
+		SupportPhone:   profile.SupportPhone,
+		SupportEmail:   profile.SupportEmail,
+		PassFooter:     profile.PassFooter,
+	}
 }
 
 func (s *Server) handleRevokePaperQR(w http.ResponseWriter, r *http.Request) {
@@ -642,18 +664,7 @@ func (s *Server) handlePaperQRPDF(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	profile := s.adminProfile()
-	status := effectiveQRStatus(token)
-	document, err := pdf.PaperQR(pdf.PaperQRData{
-		EmployeeName:   token.FullName,
-		EmployeeNumber: token.EmployeeNum,
-		Position:       optionalString(token.Position),
-		Token:          token.Token,
-		ValidFrom:      optionalString(token.ValidFrom),
-		ValidUntil:     optionalString(token.ValidUntil),
-		Status:         status,
-		QRContent:      content,
-		SupportPhone:   profile.SupportPhone,
-	})
+	document, err := pdf.PaperQR(s.paperPassData(token, profile, content))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "не удалось сформировать PDF")
 		return
@@ -661,6 +672,84 @@ func (s *Server) handlePaperQRPDF(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/pdf")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="paper-qr-%s.pdf"`, token.Token))
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(document)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(document)
+}
+
+func (s *Server) handlePaperPassesPDF(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		EmployeeIDs []string `json:"employee_ids"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if len(req.EmployeeIDs) == 0 {
+		writeError(w, http.StatusBadRequest, "выберите хотя бы одного сотрудника")
+		return
+	}
+	if len(req.EmployeeIDs) > 500 {
+		writeError(w, http.StatusBadRequest, "за один раз можно напечатать не более 500 пропусков")
+		return
+	}
+	rp, ok := s.repo()
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "система не настроена")
+		return
+	}
+	principal, _ := principalFrom(r.Context())
+	profile := s.adminProfile()
+	passes := make([]pdf.PaperQRData, 0, len(req.EmployeeIDs))
+	skipped := 0
+	seen := make(map[string]bool, len(req.EmployeeIDs))
+	for _, employeeID := range req.EmployeeIDs {
+		employeeID = strings.TrimSpace(employeeID)
+		if employeeID == "" || seen[employeeID] {
+			continue
+		}
+		seen[employeeID] = true
+		if _, err := uuid.Parse(employeeID); err != nil {
+			skipped++
+			continue
+		}
+		employee, err := rp.GetEmployee(r.Context(), employeeID)
+		if err != nil || !employee.IsActive {
+			skipped++
+			continue
+		}
+		token, err := rp.GetActivePaperQR(r.Context(), employee.ID)
+		if errors.Is(err, repo.ErrNotFound) {
+			token, err = s.issuePaperQR(r.Context(), rp, employee, principal.UserID)
+		}
+		if err != nil {
+			skipped++
+			continue
+		}
+		content, err := makeQRContent(token.Token, token.Signature, token.Payload)
+		if err != nil {
+			skipped++
+			continue
+		}
+		passes = append(passes, s.paperPassData(token, profile, content))
+	}
+	if len(passes) == 0 {
+		writeError(w, http.StatusConflict, "не удалось подготовить ни одного пропуска")
+		return
+	}
+	document, err := pdf.PaperQRSheet(passes)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "не удалось сформировать PDF")
+		return
+	}
+	s.audit(r, rp, &principal.UserID, "qr.paper_print_bulk", "qr_token", "", map[string]any{
+		"requested": len(req.EmployeeIDs),
+		"printed":   len(passes),
+		"skipped":   skipped,
+	})
+	w.Header().Set("Content-Type", "application/pdf")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="paper-passes-%s.pdf"`, time.Now().In(shift.NovosibirskZone).Format("20060102-1504")))
+	w.Header().Set("X-Passes-Printed", fmt.Sprintf("%d", len(passes)))
+	w.Header().Set("X-Passes-Skipped", fmt.Sprintf("%d", skipped))
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(document)))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(document)

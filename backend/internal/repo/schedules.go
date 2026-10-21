@@ -78,6 +78,50 @@ LIMIT 1000`, employeeID)
 	return schedules, rows.Err()
 }
 
+// ListSchedulesPage возвращает страницу графиков с поиском по табельному номеру
+// и ФИО сотрудника. Поля сотрудника заполняются, чтобы интерфейс не зависел от
+// загрузки всего справочника.
+func (r *Repo) ListSchedulesPage(ctx context.Context, employeeID, query string, limit, offset int) ([]Schedule, error) {
+	limit = normalizedLimit(limit, 50, 500)
+	offset = normalizedOffset(offset)
+	rows, err := r.Pool.Query(ctx, `
+SELECT s.id::text, s.employee_id::text, s.pattern_type, s.workdays::int[],
+       to_char(s.start_time, 'HH24:MI'), to_char(s.end_time, 'HH24:MI'),
+       to_char(s.valid_from, 'YYYY-MM-DD'), to_char(s.valid_to, 'YYYY-MM-DD'),
+       s.is_active, s.source_file,
+       e.employee_number, e.full_name
+FROM schedules s
+JOIN employees e ON e.id = s.employee_id
+WHERE (NULLIF($1, '') IS NULL OR s.employee_id = NULLIF($1, '')::uuid)
+  AND ($2 = '' OR e.employee_number ILIKE '%' || $2 || '%'
+       OR e.full_name ILIKE '%' || $2 || '%')
+ORDER BY s.is_active DESC, s.valid_from DESC, s.created_at DESC, s.id
+LIMIT $3 OFFSET $4`, employeeID, query, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var schedules []Schedule
+	for rows.Next() {
+		var s Schedule
+		var workdays []int32
+		if err := rows.Scan(
+			&s.ID, &s.EmployeeID, &s.PatternType, &workdays,
+			&s.StartTime, &s.EndTime, &s.ValidFrom, &s.ValidTo,
+			&s.IsActive, &s.SourceFile, &s.EmployeeNumber, &s.EmployeeFullName,
+		); err != nil {
+			return nil, err
+		}
+		s.Workdays = make([]int, len(workdays))
+		for i, day := range workdays {
+			s.Workdays[i] = int(day)
+		}
+		schedules = append(schedules, s)
+	}
+	return schedules, rows.Err()
+}
+
 // ReplaceSchedules заменяет активный график сотрудника набором новых записей.
 // Активной становится запись, действующая на дату today; если такой нет —
 // ближайшая будущая, иначе последняя прошедшая.

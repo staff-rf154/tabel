@@ -20,9 +20,24 @@ class ApiException implements Exception {
 
 class ApiClient {
   ApiClient({required this.storage, String? baseUrl})
-      : _baseUrl = baseUrl ?? 'http://10.0.2.2:8080';
+      : _baseUrl = normalizeBaseUrl(baseUrl ?? defaultBaseUrl);
 
-  static const defaultBaseUrl = 'http://10.0.2.2:8080';
+  static const defaultBaseUrl = 'https://srv.staff-rf.ru/api';
+
+  static String normalizeBaseUrl(String value) {
+    var normalized = value.trim().replaceAll(RegExp(r'/+$'), '');
+    if (normalized.isEmpty) return defaultBaseUrl;
+    final uri = Uri.tryParse(normalized);
+    if (uri == null || !uri.hasScheme || uri.host.isEmpty) return normalized;
+    final localHosts = {'localhost', '127.0.0.1', '10.0.2.2', '::1'};
+    final defaultPort = !uri.hasPort || uri.port == 80 || uri.port == 443;
+    if ((uri.path.isEmpty || uri.path == '/') &&
+        defaultPort &&
+        !localHosts.contains(uri.host)) {
+      normalized = '$normalized/api';
+    }
+    return normalized;
+  }
 
   final AppStorage storage;
   final http.Client _client = http.Client();
@@ -33,13 +48,15 @@ class ApiClient {
   Future<void> loadBaseUrl() async {
     final saved = await storage.readBaseUrl();
     if (saved != null && saved.isNotEmpty) {
-      _baseUrl = saved;
+      _baseUrl = normalizeBaseUrl(saved);
+      if (_baseUrl != saved) {
+        await storage.saveBaseUrl(_baseUrl);
+      }
     }
   }
 
   Future<void> setBaseUrl(String value) async {
-    final normalized = value.trim().replaceAll(RegExp(r'/+$'), '');
-    _baseUrl = normalized.isEmpty ? defaultBaseUrl : normalized;
+    _baseUrl = normalizeBaseUrl(value);
     await storage.saveBaseUrl(_baseUrl);
   }
 
@@ -66,7 +83,7 @@ class ApiClient {
     } on ApiException {
       // ignore: локальный выход выполняется в любом случае
     } finally {
-      await storage.clearTokens();
+      await storage.clearSession();
     }
   }
 
@@ -75,7 +92,40 @@ class ApiClient {
     return Me.fromJson(_asMap(body));
   }
 
-  Future<List<MarkItem>> marks({required DateTime from, required DateTime to}) async {
+  Future<MobileBootstrap> bootstrap() async {
+    final body = await _get('/mobile/bootstrap');
+    return MobileBootstrap.fromJson(_asMap(body));
+  }
+
+  Future<MonthlyStats> monthlyStats() async {
+    final body = await _get('/me/monthly-stats');
+    return MonthlyStats.fromJson(_asMap(body));
+  }
+
+  Future<List<AdminUser>> adminUsers(
+      {String query = '', int limit = 200}) async {
+    final body = await _get('/admin/users', query: {
+      'q': query,
+      'limit': '$limit',
+    });
+    return _asList(body)
+        .map((item) => AdminUser.fromJson(_asMap(item)))
+        .toList();
+  }
+
+  Future<List<ReportSummaryItem>> reportSummary(
+      {required DateTime from, required DateTime to}) async {
+    final body = await _get('/reports/summary', query: {
+      'from': from.toUtc().toIso8601String(),
+      'to': to.toUtc().toIso8601String(),
+    });
+    return _asList(body)
+        .map((item) => ReportSummaryItem.fromJson(_asMap(item)))
+        .toList();
+  }
+
+  Future<List<MarkItem>> marks(
+      {required DateTime from, required DateTime to}) async {
     final body = await _get('/marks', query: {
       'from': from.toUtc().toIso8601String(),
       'to': to.toUtc().toIso8601String(),
@@ -99,7 +149,8 @@ class ApiClient {
     final access = await storage.readAccess();
     final uri = Uri.parse('$_baseUrl/me/qr.png');
     final response = await _client.get(uri, headers: {
-      if (access != null && access.isNotEmpty) 'Authorization': 'Bearer $access',
+      if (access != null && access.isNotEmpty)
+        'Authorization': 'Bearer $access',
     });
     if (response.statusCode == 401 && await _refresh()) {
       return myQRImage();
@@ -143,7 +194,8 @@ class ApiClient {
         if (lon != null) 'lon': lon,
         if (accuracy != null) 'accuracy_m': accuracy,
         if (locationAgeSec != null) 'location_age_sec': locationAgeSec,
-        if (timestampClient != null) 'timestamp_client': timestampClient.toUtc().toIso8601String(),
+        if (timestampClient != null)
+          'timestamp_client': timestampClient.toUtc().toIso8601String(),
         if (deviceOs != null) 'device_os': deviceOs,
         if (deviceOsVersion != null) 'device_os_version': deviceOsVersion,
         if (deviceModel != null) 'device_model': deviceModel,
@@ -156,10 +208,13 @@ class ApiClient {
 
   Future<List<DelegationItem>> delegations() async {
     final body = await _get('/delegations');
-    return _asList(body).map((item) => DelegationItem.fromJson(_asMap(item))).toList();
+    return _asList(body)
+        .map((item) => DelegationItem.fromJson(_asMap(item)))
+        .toList();
   }
 
-  Future<void> createDelegation({required String toLogin, required DateTime validUntil}) async {
+  Future<void> createDelegation(
+      {required String toLogin, required DateTime validUntil}) async {
     await _send('POST', '/delegations', body: {
       'to_login': toLogin,
       'valid_until': validUntil.toUtc().toIso8601String(),
@@ -196,7 +251,8 @@ class ApiClient {
 
     late http.Response response;
     try {
-      final streamed = await _client.send(request).timeout(const Duration(seconds: 25));
+      final streamed =
+          await _client.send(request).timeout(const Duration(seconds: 25));
       response = await http.Response.fromStream(streamed);
     } on TimeoutException {
       throw ApiException(0, 'превышено время ожидания ответа сервера');
@@ -208,7 +264,11 @@ class ApiClient {
       final refreshed = await _refresh();
       if (refreshed) {
         return _send(method, path,
-            query: query, body: body, headers: headers, authenticated: authenticated, retry: false);
+            query: query,
+            body: body,
+            headers: headers,
+            authenticated: authenticated,
+            retry: false);
       }
     }
 
@@ -216,8 +276,10 @@ class ApiClient {
     if (response.statusCode >= 200 && response.statusCode < 300) {
       return decoded;
     }
-    final message = decoded is Map<String, dynamic> ? decoded['error'] as String? : null;
-    throw ApiException(response.statusCode, message ?? 'ошибка сервера (HTTP ${response.statusCode})');
+    final message =
+        decoded is Map<String, dynamic> ? decoded['error'] as String? : null;
+    throw ApiException(response.statusCode,
+        message ?? 'ошибка сервера (HTTP ${response.statusCode})');
   }
 
   Future<bool> _refresh() async {
@@ -242,7 +304,7 @@ class ApiClient {
       await storage.saveTokens(access, nextRefresh);
       return true;
     } on ApiException {
-      await storage.clearTokens();
+      await storage.clearSession();
       return false;
     }
   }

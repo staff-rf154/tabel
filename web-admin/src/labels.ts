@@ -46,6 +46,8 @@ const tokenStatuses: Record<string, string> = {
 const patterns: Record<string, string> = {
   "5/2": "5/2 (пн–пт)",
   "2/2": "2/2",
+  "4/2": "4/2",
+  "1/2": "1/2",
   custom: "Индивидуальный",
 };
 
@@ -64,6 +66,7 @@ const notificationTypes: Record<string, string> = {
 
 const auditActions: Record<string, string> = {
   "admin.profile_update": "Профиль администратора обновлён",
+  "admin.system_settings_update": "Системные настройки обновлены",
   "auth.login": "Выполнен вход в систему",
   "auth.login_blocked": "Вход заблокирован",
   "auth.login_failed": "Неудачная попытка входа",
@@ -76,6 +79,7 @@ const auditActions: Record<string, string> = {
   "delegation.revoke": "Делегирование отозвано",
   "demo.clear": "Демонстрационные данные удалены",
   "demo.seed": "Демонстрационные данные загружены",
+  "demo.reset": "Демонстрационная база заменена",
   "department.create": "Отдел создан",
   "department.import": "Выполнен импорт отделов",
   "position.create": "Должность создана",
@@ -87,6 +91,10 @@ const auditActions: Record<string, string> = {
   "mobile_build.delete": "Сборка приложения удалена",
   "mobile_build.upload": "Сборка приложения загружена",
   "oauth.client_create": "OAuth-клиент создан",
+  "oauth.client_update": "OAuth-клиент изменён",
+  "oauth.client_disable": "OAuth-клиент отключён",
+  "oauth.client_enable": "OAuth-клиент включён",
+  "oauth.client_delete": "OAuth-клиент удалён",
   "oauth.client_rotate": "Секрет OAuth-клиента изменён",
   "oauth.whitelist_add": "IP-адрес добавлен в разрешённые",
   "office.create": "Офис создан",
@@ -96,6 +104,7 @@ const auditActions: Record<string, string> = {
   "qr.admin_issue": "Личный QR создан администратором",
   "qr.admin_rotate": "QR сотрудника изменён администратором",
   "qr.self_rotate": "QR изменён сотрудником",
+  "qr.paper_print_bulk": "Массовая печать бумажных пропусков",
   "qr.paper_issue": "Бумажный QR выпущен",
   "qr.paper_revoke": "Бумажный QR отозван",
   "qr.static_upload": "Статический QR загружен",
@@ -156,6 +165,8 @@ export const platformLabel = (value: string | null | undefined) => translate(pla
 export const notificationTypeLabel = (value: string | null | undefined) => translate(notificationTypes, value);
 export const auditActionLabel = (value: string | null | undefined) => translate(auditActions, value);
 export const auditEntityLabel = (value: string | null | undefined) => translate(auditEntities, value);
+export const auditActionOptions = Object.entries(auditActions).sort((a, b) => a[1].localeCompare(b[1], "ru"));
+export const auditEntityOptions = Object.entries(auditEntities).sort((a, b) => a[1].localeCompare(b[1], "ru"));
 
 const auditFields: Record<string, string> = {
   action: "Действие",

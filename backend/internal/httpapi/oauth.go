@@ -259,3 +259,78 @@ func (s *Server) handleAddIPWhitelist(w http.ResponseWriter, r *http.Request) {
 	s.audit(r, rp, &principal.UserID, "oauth.whitelist_add", "oauth_client", id, map[string]any{"cidr": req.CIDR})
 	writeJSON(w, http.StatusOK, entry)
 }
+
+func (s *Server) handleUpdateOAuthClient(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathUUID(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		IsActive *bool `json:"is_active"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.IsActive == nil {
+		writeError(w, http.StatusBadRequest, "поле is_active обязательно")
+		return
+	}
+	rp, ok := s.repo()
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "система не настроена")
+		return
+	}
+	client, err := rp.SetOAuthClientActive(r.Context(), id, *req.IsActive)
+	switch {
+	case errors.Is(err, repo.ErrNotFound):
+		writeError(w, http.StatusNotFound, "клиент не найден")
+		return
+	case err != nil:
+		writeError(w, http.StatusInternalServerError, "не удалось изменить состояние клиента")
+		return
+	}
+	action := "oauth.client_disable"
+	if *req.IsActive {
+		action = "oauth.client_enable"
+	}
+	principal, _ := principalFrom(r.Context())
+	s.audit(r, rp, &principal.UserID, action, "oauth_client", client.ID, map[string]any{
+		"client_id": client.ClientID,
+		"is_active": *req.IsActive,
+	})
+	writeJSON(w, http.StatusOK, client)
+}
+
+func (s *Server) handleDeleteOAuthClient(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathUUID(w, r)
+	if !ok {
+		return
+	}
+	rp, ok := s.repo()
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "система не настроена")
+		return
+	}
+	client, err := rp.OAuthClientByUUID(r.Context(), id)
+	if errors.Is(err, repo.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "клиент не найден")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "ошибка чтения клиента")
+		return
+	}
+	if err := rp.DeleteOAuthClient(r.Context(), id); errors.Is(err, repo.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "клиент не найден")
+		return
+	} else if err != nil {
+		writeError(w, http.StatusInternalServerError, "не удалось удалить клиента")
+		return
+	}
+	principal, _ := principalFrom(r.Context())
+	s.audit(r, rp, &principal.UserID, "oauth.client_delete", "oauth_client", id, map[string]any{
+		"client_id": client.ClientID,
+		"name":      client.Name,
+	})
+	w.WriteHeader(http.StatusNoContent)
+}

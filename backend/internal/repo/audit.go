@@ -54,9 +54,11 @@ WHERE ($1 = '' OR action = $1)
   AND ($3 = '' OR entity_id = $3)
   AND ($4::timestamptz IS NULL OR created_at >= $4)
   AND ($5::timestamptz IS NULL OR created_at <= $5)
+  AND ($6 = '' OR actor_user_id = NULLIF($6, '')::uuid)
+  AND ($7 = '' OR COALESCE(host(ip), '') ILIKE '%' || $7 || '%')
 ORDER BY created_at DESC
-LIMIT $6 OFFSET $7`,
-		f.Action, f.EntityType, f.EntityID, f.From, f.To, f.Limit, f.Offset)
+LIMIT $8 OFFSET $9`,
+		f.Action, f.EntityType, f.EntityID, f.From, f.To, f.ActorUserID, f.IP, f.Limit, f.Offset)
 	if err != nil {
 		return nil, err
 	}

@@ -7,13 +7,13 @@ const qrTokenColumns = `
 	to_char(q.valid_from, 'YYYY-MM-DD'), to_char(q.valid_until, 'YYYY-MM-DD'), q.status, q.revoked_reason,
 	e.is_active AND NOT EXISTS (
 		SELECT 1 FROM users u WHERE u.employee_id = e.id AND u.auth_blocked
-	), e.employee_number, e.full_name, e.position, e.phone, e.email`
+	), e.employee_number, e.full_name, e.position, d.name, e.phone, e.email`
 
 func scanQRToken(row interface{ Scan(...any) error }, t *QRToken) error {
 	return row.Scan(
 		&t.ID, &t.EmployeeID, &t.Type, &t.Token, &t.Payload, &t.Signature,
 		&t.ValidFrom, &t.ValidUntil, &t.Status, &t.RevokedReason,
-		&t.EmployeeOK, &t.EmployeeNum, &t.FullName, &t.Position, &t.Phone, &t.Email,
+		&t.EmployeeOK, &t.EmployeeNum, &t.FullName, &t.Position, &t.Department, &t.Phone, &t.Email,
 	)
 }
 
@@ -23,6 +23,7 @@ func getQRToken(ctx context.Context, q querier, where string, arg any) (QRToken,
 SELECT `+qrTokenColumns+`
 FROM qr_tokens q
 JOIN employees e ON e.id = q.employee_id
+LEFT JOIN departments d ON d.id = e.department_id
 WHERE `+where, arg), &t)
 	if isNoRows(err) {
 		return t, ErrNotFound
@@ -40,6 +41,12 @@ func (r *Repo) GetActiveStaticQR(ctx context.Context, employeeID string) (QRToke
 
 func (r *Repo) GetQRTokenByID(ctx context.Context, id string) (QRToken, error) {
 	return getQRToken(ctx, r.Pool, "q.id = $1::uuid", id)
+}
+
+// GetActivePaperQR возвращает действующий бумажный токен сотрудника.
+func (r *Repo) GetActivePaperQR(ctx context.Context, employeeID string) (QRToken, error) {
+	return getQRToken(ctx, r.Pool, `q.employee_id = $1::uuid AND q.type = 'paper'
+		AND q.status = 'active' AND q.valid_until >= CURRENT_DATE`, employeeID)
 }
 
 func (r *Repo) FindEmployeeByNumber(ctx context.Context, number string) (Employee, error) {

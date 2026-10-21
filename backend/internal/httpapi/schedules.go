@@ -92,7 +92,12 @@ func (s *Server) handleListSchedules(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	schedules, err := rp.ListSchedules(r.Context(), employeeID)
+	limit, offset, ok := pagination(w, r)
+	if !ok {
+		return
+	}
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	schedules, err := rp.ListSchedulesPage(r.Context(), employeeID, query, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "не удалось получить графики")
 		return
@@ -759,6 +764,10 @@ func normalizePattern(raw string) (string, error) {
 		return "5/2", nil
 	case "2/2":
 		return "2/2", nil
+	case "4/2":
+		return "4/2", nil
+	case "1/2":
+		return "1/2", nil
 	case "custom":
 		return "custom", nil
 	default:

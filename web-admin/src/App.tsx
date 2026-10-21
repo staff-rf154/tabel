@@ -2,9 +2,10 @@ import { useCallback, useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { api, clearTokens, errorText, getToken, login } from "./api";
 import { Employees, Offices, Schedules, Users } from "./sections";
-import { Audit, Delegations, Marks, Notifications, OAuthPanel, QRPanel } from "./sections2";
+import { Audit, Delegations, Marks, Notifications, OAuthPanel, QRPanel, SystemSettings } from "./sections2";
 import { Directories } from "./directories";
 import { DemoPanel, Imports, MobileBuilds } from "./sections3";
+import { Security } from "./security";
 import { roleLabel } from "./labels";
 
 type SetupStatus = {
@@ -28,6 +29,8 @@ const sections = [
   ["delegations", "Делегирования"],
   ["notifications", "Уведомления"],
   ["oauth", "OAuth"],
+  ["settings", "Настройки"],
+  ["security", "Безопасность"],
   ["mobile", "Мобильное приложение"],
   ["demo", "Демо-данные"],
   ["audit", "Аудит"],
@@ -40,6 +43,7 @@ export default function App() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [current, setCurrent] = useState<SectionKey>("employees");
   const [error, setError] = useState("");
+  const [loginNotice, setLoginNotice] = useState("");
 
   const loadStatus = useCallback(async () => {
     const res = await api<SetupStatus>("/setup/status");
@@ -77,6 +81,7 @@ export default function App() {
   function logout() {
     void api("/auth/logout", { method: "POST" });
     clearTokens();
+    setLoginNotice("");
     setProfile(null);
   }
 
@@ -94,7 +99,7 @@ export default function App() {
   }
 
   if (!profile) {
-    return <Login onLogin={async () => { await loadProfile(); }} />;
+    return <Login notice={loginNotice} onLogin={async () => { setLoginNotice(""); await loadProfile(); }} />;
   }
 
   return (
@@ -128,6 +133,8 @@ export default function App() {
         {current === "delegations" && <Delegations />}
         {current === "notifications" && <Notifications />}
         {current === "oauth" && <OAuthPanel />}
+        {current === "settings" && <SystemSettings />}
+        {current === "security" && <Security onPasswordChanged={(message) => { clearTokens(); setProfile(null); setLoginNotice(message); }} />}
         {current === "mobile" && <MobileBuilds />}
         {current === "demo" && <DemoPanel />}
         {current === "audit" && <Audit />}
@@ -136,7 +143,7 @@ export default function App() {
   );
 }
 
-function Login({ onLogin }: { onLogin: () => Promise<void> }) {
+function Login({ notice, onLogin }: { notice?: string; onLogin: () => Promise<void> }) {
   const [loginValue, setLoginValue] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -159,6 +166,7 @@ function Login({ onLogin }: { onLogin: () => Promise<void> }) {
   return (
     <main className="app narrow">
       <h1>Табель — вход</h1>
+      {notice && <p className="ok">{notice}</p>}
       <form onSubmit={submit}>
         <label>Логин<input value={loginValue} onChange={(e) => setLoginValue(e.target.value)} autoComplete="username" required /></label>
         <label>Пароль<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required /></label>
@@ -215,7 +223,7 @@ function Setup({ status, onDone }: { status: SetupStatus; onDone: () => Promise<
             support_phone: supportPhone,
           }),
         }),
-      "Параметры сохранены, миграции применены",
+      "Параметры сохранены, база и структура БД готовы",
     );
   }
 
@@ -257,7 +265,7 @@ function Setup({ status, onDone }: { status: SetupStatus; onDone: () => Promise<
         <label>Логин главного администратора<input value={adminLogin} onChange={(e) => setAdminLogin(e.target.value)} autoComplete="off" /></label>
         <label>Пароль главного администратора<input type="password" value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} autoComplete="new-password" /></label>
         <div className="actions">
-          <button type="button" onClick={() => void run(() => api("/setup/test-db", { method: "POST", body: JSON.stringify({ database_url: databaseUrl }) }), "Подключение к PostgreSQL успешно")} disabled={busy}>
+          <button type="button" onClick={() => void run(() => api("/setup/test-db", { method: "POST", body: JSON.stringify({ database_url: databaseUrl }) }), "Подключение успешно, структура БД готова")} disabled={busy}>
             Проверить БД
           </button>
           <button type="submit" disabled={busy}>Сохранить и применить</button>

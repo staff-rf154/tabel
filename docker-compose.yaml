@@ -32,9 +32,9 @@ services:
       DB_USER: ${POSTGRES_USER}
       DB_PASSWORD: ${POSTGRES_PASSWORD}
       DB_NAME: ${POSTGRES_DB}
-      POOL_MODE: transaction
-      AUTH_TYPE: scram-sha-256
-      MAX_CLIENT_CONN: "200"
+      POOL_MODE: ${PGBOUNCER_POOL_MODE:-transaction}
+      AUTH_TYPE: ${PGBOUNCER_AUTH_TYPE:-scram-sha-256}
+      MAX_CLIENT_CONN: "${PGBOUNCER_MAX_CLIENT_CONN:-200}"
       DEFAULT_POOL_SIZE: "${PGBOUNCER_POOL_SIZE:-40}"
     ports:
       - "${PGBOUNCER_PORT:-6432}:5432"
@@ -88,11 +88,39 @@ services:
       JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-15m}
       JWT_REFRESH_TTL: ${JWT_REFRESH_TTL:-720h}
       DATABASE_URL: ${DATABASE_URL}
+      DATABASE_DIRECT_URL: ${DATABASE_DIRECT_URL:-}
+      DB_MAX_CONNS: ${DB_MAX_CONNS:-40}
+      DB_MIN_CONNS: ${DB_MIN_CONNS:-4}
       REDIS_ADDR: ${REDIS_ADDR}
       REDIS_PASSWORD: ${REDIS_PASSWORD}
+      PGBOUNCER_HOST: ${PGBOUNCER_HOST:-pgbouncer}
+      PGBOUNCER_INTERNAL_PORT: "5432"
+      PGBOUNCER_PORT: ${PGBOUNCER_PORT:-6432}
+      PGBOUNCER_POOL_MODE: ${PGBOUNCER_POOL_MODE:-transaction}
+      PGBOUNCER_MAX_CLIENT_CONN: ${PGBOUNCER_MAX_CLIENT_CONN:-200}
+      PGBOUNCER_POOL_SIZE: ${PGBOUNCER_POOL_SIZE:-40}
+      PGBOUNCER_AUTH_TYPE: ${PGBOUNCER_AUTH_TYPE:-scram-sha-256}
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://garage:3900}
+      S3_REGION: ${S3_REGION:-garage}
+      S3_BUCKET: ${S3_BUCKET:-tabel}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-}
+      S3_USE_SSL: ${S3_USE_SSL:-false}
+      S3_PATH_STYLE: ${S3_PATH_STYLE:-true}
+      SSL_CERT_PATH: ${SSL_CERT_PATH:-}
+      SSL_KEY_PATH: ${SSL_KEY_PATH:-}
+      BACKEND_PORT: ${BACKEND_PORT:-8080}
+      ADMIN_PORT: ${ADMIN_PORT:-8081}
+      OPERATOR_PORT: ${OPERATOR_PORT:-8082}
+      REPORTS_PORT: ${REPORTS_PORT:-8083}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      S3_API_PORT: ${S3_API_PORT:-9000}
+      GARAGE_ADMIN_PORT: ${GARAGE_ADMIN_PORT:-9001}
+      HTTPS_PORT: ${HTTPS_PORT:-443}
       MOBILE_BUILDS_DIR: ${MOBILE_BUILDS_DIR:-/data/mobile}
     volumes:
       - settings_data:/data
+      - ${SSL_DIR:-/opt/ssl}:/ssl:ro
     ports:
       - "${BACKEND_PORT:-8080}:8080"
     depends_on:
@@ -108,12 +136,34 @@ services:
     networks:
       - tabel
 
+  edge:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infra/nginx/ssl.conf:/etc/nginx/conf.d/default.conf:ro
+      - ${SSL_DIR:-/opt/ssl}/staff-rf:/etc/nginx/ssl:ro
+    depends_on:
+      - backend
+      - web-admin
+      - web-operator
+      - reports-web
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - tabel
+
   web-admin:
     build:
       context: ./web-admin
     restart: unless-stopped
     ports:
-      - "${ADMIN_PORT:-8081}:80"
+      - "127.0.0.1:${ADMIN_PORT:-8081}:80"
     volumes:
       - ./templates:/usr/share/nginx/html/templates:ro
     depends_on:
@@ -126,7 +176,7 @@ services:
       context: ./web-operator
     restart: unless-stopped
     ports:
-      - "${OPERATOR_PORT:-8082}:80"
+      - "127.0.0.1:${OPERATOR_PORT:-8082}:80"
     depends_on:
       - backend
     networks:
@@ -137,7 +187,7 @@ services:
       context: ./reports-web
     restart: unless-stopped
     ports:
-      - "${REPORTS_PORT:-8083}:80"
+      - "127.0.0.1:${REPORTS_PORT:-8083}:80"
     depends_on:
       - backend
     networks:

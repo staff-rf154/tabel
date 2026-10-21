@@ -59,7 +59,8 @@ class _DelegateScreenState extends State<DelegateScreen> {
     );
     if (!mounted) return;
     setState(() {
-      _validUntil = DateTime(date.year, date.month, date.day, time?.hour ?? 23, time?.minute ?? 59);
+      _validUntil = DateTime(date.year, date.month, date.day, time?.hour ?? 23,
+          time?.minute ?? 59);
     });
   }
 
@@ -90,7 +91,8 @@ class _DelegateScreenState extends State<DelegateScreen> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        const Text('Передача прав оператора сотруднику. Укажите логин сотрудника; запрос подтверждает администратор.'),
+        const Text(
+            'Передача прав оператора сотруднику. Укажите логин сотрудника; запрос подтверждает администратор.'),
         const SizedBox(height: 16),
         TextField(
           controller: _userController,
@@ -116,16 +118,21 @@ class _DelegateScreenState extends State<DelegateScreen> {
             child: Text(_message!),
           ),
         const Divider(height: 32),
-        Text('Мои делегирования', style: Theme.of(context).textTheme.titleMedium),
-        if (_items.isEmpty) const Padding(
-          padding: EdgeInsets.symmetric(vertical: 12),
-          child: Text('Записей нет'),
-        ),
+        Text('Мои делегирования',
+            style: Theme.of(context).textTheme.titleMedium),
+        if (_items.isEmpty)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 12),
+            child: Text('Записей нет'),
+          ),
         ..._items.map(
           (item) => Card(
             child: ListTile(
               title: Text('Статус: ${item.statusTitle}'),
-              subtitle: Text([if (item.toLogin != null) 'Логин: ${item.toLogin}', 'До ${_format.format(item.validUntil)}'].join(' · ')),
+              subtitle: Text([
+                if (item.toLogin != null) 'Логин: ${item.toLogin}',
+                'До ${_format.format(item.validUntil)}'
+              ].join(' · ')),
             ),
           ),
         ),

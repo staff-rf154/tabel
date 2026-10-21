@@ -43,10 +43,14 @@ class _LoginScreenState extends State<LoginScreen> {
     });
     try {
       await widget.api.setBaseUrl(_baseUrlController.text);
-      await widget.api.login(_loginController.text.trim(), _passwordController.text);
+      await widget.api
+          .login(_loginController.text.trim(), _passwordController.text);
       await widget.onLoggedIn();
     } on ApiException catch (error) {
-      setState(() => _error = error.message);
+      final hint = error.status == 405
+          ? ' Проверьте адрес API, например https://srv.staff-rf.ru/api'
+          : '';
+      setState(() => _error = '${error.message}$hint');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -63,7 +67,8 @@ class _LoginScreenState extends State<LoginScreen> {
             TextField(
               controller: _loginController,
               autofillHints: const [AutofillHints.username],
-              decoration: const InputDecoration(labelText: 'Логин', border: OutlineInputBorder()),
+              decoration: const InputDecoration(
+                  labelText: 'Логин', border: OutlineInputBorder()),
             ),
             const SizedBox(height: 16),
             TextField(
@@ -71,11 +76,13 @@ class _LoginScreenState extends State<LoginScreen> {
               obscureText: true,
               autofillHints: const [AutofillHints.password],
               onSubmitted: (_) => _busy ? null : _submit(),
-              decoration: const InputDecoration(labelText: 'Пароль', border: OutlineInputBorder()),
+              decoration: const InputDecoration(
+                  labelText: 'Пароль', border: OutlineInputBorder()),
             ),
             if (_error != null) ...[
               const SizedBox(height: 12),
-              Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+              Text(_error!,
+                  style: TextStyle(color: Theme.of(context).colorScheme.error)),
             ],
             const SizedBox(height: 20),
             FilledButton(
@@ -93,7 +100,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 keyboardType: TextInputType.url,
                 decoration: const InputDecoration(
                   labelText: 'Адрес сервера',
-                  helperText: 'Например, https://tabel.example.ru',
+                  helperText: 'Например, https://srv.staff-rf.ru/api',
                   border: OutlineInputBorder(),
                 ),
               ),

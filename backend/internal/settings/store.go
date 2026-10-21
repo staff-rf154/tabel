@@ -11,12 +11,46 @@ import (
 )
 
 const (
-	KeyDatabaseURL    = "database_url"
-	KeyRedisAddr      = "redis_addr"
-	KeyRedisPassword  = "redis_password"
-	KeyMainAdminEmail = "main_admin_email"
-	KeySupportPhone   = "support_phone"
-	KeyQRPrivateKey   = "qr_private_key"
+	KeyDatabaseURL         = "database_url"
+	KeyDatabaseDirectURL   = "database_direct_url"
+	KeyRedisAddr           = "redis_addr"
+	KeyRedisPassword       = "redis_password"
+	KeyPgBouncerHost       = "pgbouncer_host"
+	KeyPgBouncerPort       = "pgbouncer_port"
+	KeyPgBouncerPoolMode   = "pgbouncer_pool_mode"
+	KeyPgBouncerMaxClients = "pgbouncer_max_client_conn"
+	KeyPgBouncerPoolSize   = "pgbouncer_default_pool_size"
+	KeyPgBouncerAuthType   = "pgbouncer_auth_type"
+	KeyS3Endpoint          = "s3_endpoint"
+	KeyS3Region            = "s3_region"
+	KeyS3Bucket            = "s3_bucket"
+	KeyS3AccessKey         = "s3_access_key"
+	KeyS3SecretKey         = "s3_secret_key"
+	KeyS3UseSSL            = "s3_use_ssl"
+	KeyS3PathStyle         = "s3_path_style"
+	KeySSLCertPath         = "ssl_cert_path"
+	KeySSLKeyPath          = "ssl_key_path"
+	KeyHTTPPort            = "service_port_backend"
+	KeyAdminPort           = "service_port_admin"
+	KeyOperatorPort        = "service_port_operator"
+	KeyReportsPort         = "service_port_reports"
+	KeyPostgresPort        = "service_port_postgres"
+	KeyPgBouncerPublicPort = "service_port_pgbouncer"
+	KeyRedisPublicPort     = "service_port_redis"
+	KeyS3APIPort           = "service_port_s3_api"
+	KeyS3AdminPort         = "service_port_s3_admin"
+	KeyHTTPSPort           = "service_port_https"
+	KeyMainAdminEmail      = "main_admin_email"
+	KeySupportPhone        = "support_phone"
+	KeySupportEmail        = "support_email"
+	KeyCompanyName         = "company_name"
+	KeyCompanyAddress      = "company_address"
+	KeyCompanyINN          = "company_inn"
+	KeyWebsite             = "website"
+	KeyPaperQRValidDays    = "paper_qr_valid_days"
+	KeyDefaultOfficeRadius = "default_office_radius_m"
+	KeyPassFooter          = "pass_footer"
+	KeyQRPrivateKey        = "qr_private_key"
 )
 
 var ErrNotFound = errors.New("настройка не найдена")
@@ -116,6 +150,11 @@ VALUES (?, ?, ?, datetime('now'))
 ON CONFLICT(key) DO UPDATE
 SET value = excluded.value, is_secret = excluded.is_secret, updated_at = excluded.updated_at`,
 		key, raw, boolToInt(secret))
+	return err
+}
+
+func (s *Store) Backup(path string) error {
+	_, err := s.db.Exec(`VACUUM INTO ?`, path)
 	return err
 }
 

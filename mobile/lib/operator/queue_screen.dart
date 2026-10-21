@@ -131,7 +131,8 @@ class _QueueScreenState extends State<QueueScreen> {
             child: ListTile(
               leading: const Icon(Icons.schedule),
               title: Text(_format.format(item.timestampClient)),
-              subtitle: Text('${eventTypeTitle(item.eventType)} · ${item.qrToken.substring(0, 8)}…'),
+              subtitle: Text(
+                  '${eventTypeTitle(item.eventType)} · ${item.qrToken.substring(0, 8)}…'),
               trailing: IconButton(
                 tooltip: 'Удалить',
                 onPressed: () => _remove(item),

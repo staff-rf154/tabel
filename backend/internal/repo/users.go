@@ -279,9 +279,9 @@ func capitalizeFirst(value string) string {
 	return string(runes)
 }
 
-// GenerateEmployeeLogin строит логин «ФамилияИ» и при занятости добавляет
-// по одной букве имени, пока логин не станет уникальным.
-func (r *Repo) GenerateEmployeeLogin(ctx context.Context, fullName string) (string, error) {
+// employeeLoginCandidates строит варианты логина «ФамилияИ», «ФамилияИв»,
+// «ФамилияИва» и так далее. Первый вариант — базовый «ФамилияИ».
+func employeeLoginCandidates(fullName string) (string, []string) {
 	fields := strings.Fields(fullName)
 	surname := ""
 	name := ""
@@ -308,6 +308,13 @@ func (r *Repo) GenerateEmployeeLogin(ctx context.Context, fullName string) (stri
 	for i := 2; i <= len(nameRunes); i++ {
 		candidates = append(candidates, base+string(nameRunes[1:i]))
 	}
+	return base, candidates
+}
+
+// GenerateEmployeeLogin строит логин «ФамилияИ» и при занятости добавляет
+// по одной букве имени, пока логин не станет уникальным.
+func (r *Repo) GenerateEmployeeLogin(ctx context.Context, fullName string) (string, error) {
+	base, candidates := employeeLoginCandidates(fullName)
 	for _, candidate := range candidates {
 		var exists bool
 		if err := r.Pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM users WHERE lower(login) = lower($1))`, candidate).Scan(&exists); err != nil {
@@ -330,7 +337,7 @@ func (r *Repo) GenerateEmployeeLogin(ctx context.Context, fullName string) (stri
 	return "", ErrLoginTaken
 }
 
-func (r *Repo) ListUsers(ctx context.Context, role string, limit, offset int) ([]User, error) {
+func (r *Repo) ListUsers(ctx context.Context, role, search string, limit, offset int) ([]User, error) {
 	limit = normalizedLimit(limit, 50, 500)
 	offset = normalizedOffset(offset)
 	rows, err := r.Pool.Query(ctx, `
@@ -341,8 +348,12 @@ SELECT u.id::text, u.role, u.login, u.employee_id::text,
 FROM users u
 LEFT JOIN employees e ON e.id = u.employee_id
 WHERE ($1 = '' OR u.role = $1)
+  AND ($2 = ''
+       OR u.login ILIKE '%' || $2 || '%'
+       OR e.full_name ILIKE '%' || $2 || '%'
+       OR e.employee_number ILIKE '%' || $2 || '%')
 ORDER BY u.created_at DESC
-LIMIT $2 OFFSET $3`, role, limit, offset)
+LIMIT $3 OFFSET $4`, role, search, limit, offset)
 	if err != nil {
 		return nil, err
 	}

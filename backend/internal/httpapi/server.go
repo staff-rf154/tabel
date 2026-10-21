@@ -20,13 +20,14 @@ import (
 )
 
 type Server struct {
-	mu     sync.RWMutex
-	cfg    config.Config
-	store  *settings.Store
-	pool   *pgxpool.Pool
-	rdb    *redis.Client
-	tokens *auth.TokenManager
-	qrMgr  *qr.Manager
+	mu          sync.RWMutex
+	migrationMu sync.Mutex
+	cfg         config.Config
+	store       *settings.Store
+	pool        *pgxpool.Pool
+	rdb         *redis.Client
+	tokens      *auth.TokenManager
+	qrMgr       *qr.Manager
 }
 
 func NewServer(cfg config.Config, store *settings.Store, pool *pgxpool.Pool, rdb *redis.Client) *Server {
@@ -87,6 +88,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /auth/logout", s.authenticated(s.handleLogout))
 	mux.HandleFunc("POST /auth/password", s.authenticated(s.handleChangePassword))
 	mux.HandleFunc("GET /me", s.authenticated(s.handleMe))
+	mux.HandleFunc("GET /me/monthly-stats", s.authenticated(s.handleMyMonthlyStats))
+	mux.HandleFunc("GET /mobile/bootstrap", s.authenticated(s.handleMobileBootstrap))
 
 	mux.HandleFunc("POST /mark", s.authenticated(s.handleCreateMark))
 	mux.HandleFunc("GET /marks", s.authenticated(s.handleListMarks))
@@ -112,6 +115,16 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /admin/users/{id}/reset-registration", s.admin(s.handleResetRegistration))
 	mux.HandleFunc("GET /admin/profile", s.admin(s.handleGetAdminProfile))
 	mux.HandleFunc("PUT /admin/profile", s.admin(s.handleUpdateAdminProfile))
+	mux.HandleFunc("GET /admin/system-settings", s.admin(s.handleGetSystemSettings))
+	mux.HandleFunc("PUT /admin/system-settings", s.admin(s.handleUpdateSystemSettings))
+	mux.HandleFunc("POST /admin/system-settings/test", s.admin(s.handleTestSystemConnections))
+	mux.HandleFunc("POST /admin/system-settings/test-ssl", s.admin(s.handleTestSSL))
+	mux.HandleFunc("POST /admin/system-settings/test-s3", s.admin(s.handleTestS3))
+	mux.HandleFunc("GET /admin/system-settings/db-scripts", s.admin(s.handleListDBScripts))
+	mux.HandleFunc("GET /admin/system-settings/db-scripts.zip", s.admin(s.handleDownloadDBScriptsZip))
+	mux.HandleFunc("GET /admin/system-settings/db-scripts/{name}", s.admin(s.handleDownloadDBScript))
+	mux.HandleFunc("GET /admin/system-settings/settings-db", s.admin(s.handleDownloadSettingsDB))
+	mux.HandleFunc("POST /admin/system-settings/migrate-postgres", s.admin(s.handleMigratePostgreSQL))
 	mux.HandleFunc("GET /admin/audit", s.admin(s.handleListAudit))
 	mux.HandleFunc("GET /admin/marks", s.admin(s.handleListAdminMarks))
 	mux.HandleFunc("GET /admin/schedules", s.admin(s.handleListSchedules))
@@ -138,6 +151,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /admin/employees/import", s.admin(s.handleImportEmployees))
 	mux.HandleFunc("POST /admin/users", s.admin(s.handleCreateUser))
 	mux.HandleFunc("POST /admin/demo/seed", s.admin(s.handleSeedDemo))
+	mux.HandleFunc("POST /admin/demo/reset", s.admin(s.handleResetDemo))
 	mux.HandleFunc("POST /admin/demo/clear", s.admin(s.handleClearDemo))
 	mux.HandleFunc("GET /admin/mobile-builds", s.admin(s.handleListMobileBuilds))
 	mux.HandleFunc("POST /admin/mobile-builds", s.admin(s.handleUploadMobileBuild))
@@ -150,6 +164,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /admin/qr/paper", s.admin(s.handleIssuePaperQR))
 	mux.HandleFunc("POST /admin/qr/paper/{id}/revoke", s.admin(s.handleRevokePaperQR))
 	mux.HandleFunc("GET /admin/qr/paper/{id}/pdf", s.admin(s.handlePaperQRPDF))
+	mux.HandleFunc("POST /admin/qr/passes/pdf", s.admin(s.handlePaperPassesPDF))
 
 	mux.HandleFunc("GET /notifications", s.authenticated(s.handleListNotifications))
 	mux.HandleFunc("POST /notifications/{id}/read", s.authenticated(s.handleMarkNotificationRead))
@@ -162,6 +177,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /admin/offline-imports", s.admin(s.handleOfflineImport))
 	mux.HandleFunc("GET /admin/oauth/clients", s.admin(s.handleListOAuthClients))
 	mux.HandleFunc("POST /admin/oauth/clients", s.admin(s.handleCreateOAuthClient))
+	mux.HandleFunc("PATCH /admin/oauth/clients/{id}", s.admin(s.handleUpdateOAuthClient))
+	mux.HandleFunc("DELETE /admin/oauth/clients/{id}", s.admin(s.handleDeleteOAuthClient))
 	mux.HandleFunc("POST /admin/oauth/clients/{id}/rotate", s.admin(s.handleRotateOAuthSecret))
 	mux.HandleFunc("GET /admin/oauth/clients/{id}/whitelist", s.admin(s.handleListIPWhitelist))
 	mux.HandleFunc("POST /admin/oauth/clients/{id}/whitelist", s.admin(s.handleAddIPWhitelist))
@@ -180,6 +197,11 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /reports/marks", s.reportsRole(s.handleReportMarks))
 	mux.HandleFunc("GET /reports/shifts", s.reportsRole(s.handleReportShifts))
 	mux.HandleFunc("GET /reports/summary", s.reportsRole(s.handleReportSummary))
+	mux.HandleFunc("GET /reports/worked-time", s.reportsRole(s.handleReportWorkedTime))
+	mux.HandleFunc("GET /reports/first-last", s.reportsRole(s.handleReportFirstLast))
+	mux.HandleFunc("GET /reports/entries-exits", s.reportsRole(s.handleReportEntriesExits))
+	mux.HandleFunc("GET /reports/daily", s.reportsRole(s.handleReportDaily))
+	mux.HandleFunc("GET /reports/timesheet", s.reportsRole(s.handleReportTimesheet))
 
 	return withCORS(s.cfg.CORSAllowedOrigins, withMetrics(mux))
 }

@@ -3,10 +3,19 @@ import type { FormEvent } from "react";
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { api, errorText, getToken } from "./api";
+import {
+  OFFLINE_MAP_STYLE,
+  officePointCollection,
+  officeZoneCollection,
+  type OfficeMapItem,
+} from "./mapStyle";
 import { Field, Notice, fmt, useList } from "./sections";
+import { InfraSettings } from "./InfraSettings";
 import {
   auditActionLabel,
+  auditActionOptions,
   auditEntityLabel,
+  auditEntityOptions,
   auditFieldLabel,
   auditValueLabel,
   clientTypeLabel,
@@ -23,7 +32,6 @@ type ImportReport = { rows_total: number; rows_ok: number; rows_error: number; r
 /* ---------------- QR-токены ---------------- */
 
 type Employee = { id: string; full_name: string; employee_number: string };
-type PaperQR = { id: string; token: string; employee_id: string; valid_from?: string | null; valid_until?: string | null };
 type BulkQRRow = {
   employee_id: string;
   employee_number?: string;
@@ -37,10 +45,7 @@ type BulkQRReport = { total: number; created: number; existing: number; errors: 
 export function QRPanel() {
   const employees = useList<Employee>("/admin/employees?limit=500");
   const [employeeID, setEmployeeID] = useState("");
-  const [payload, setPayload] = useState('{\n  "employee_number": ""\n}');
-  const [signature, setSignature] = useState("");
   const [message, setMessage] = useState<Message>(null);
-  const [paper, setPaper] = useState<PaperQR | null>(null);
   const [bulk, setBulk] = useState<ImportReport | null>(null);
   const [qrImage, setQrImage] = useState("");
   const [qrBusy, setQrBusy] = useState(false);
@@ -48,41 +53,8 @@ export function QRPanel() {
   const [selectedEmployees, setSelectedEmployees] = useState<string[]>([]);
   const [bulkEmployees, setBulkEmployees] = useState<BulkQRReport | null>(null);
   const [bulkQrBusy, setBulkQrBusy] = useState(false);
+  const [passBusy, setPassBusy] = useState(false);
   const [bulkPreview, setBulkPreview] = useState<{ name: string; url: string } | null>(null);
-
-  async function issueStatic(event: FormEvent) {
-    event.preventDefault();
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(payload);
-    } catch {
-      setMessage({ kind: "error", text: "payload должен быть корректным JSON" });
-      return;
-    }
-    const res = await api("/admin/qr/static", {
-      method: "POST",
-      body: JSON.stringify({ employee_id: employeeID.trim(), payload: parsed, signature }),
-    });
-    if (!res.ok) {
-      setMessage({ kind: "error", text: errorText(res.body, "не удалось выпустить QR") });
-      return;
-    }
-    setMessage({ kind: "ok", text: "Статический QR выпущен" });
-  }
-
-  async function issuePaper(event: FormEvent) {
-    event.preventDefault();
-    const res = await api<PaperQR>("/admin/qr/paper", {
-      method: "POST",
-      body: JSON.stringify({ employee_id: employeeID.trim() }),
-    });
-    if (!res.ok || !res.body) {
-      setMessage({ kind: "error", text: errorText(res.body, "не удалось выпустить бумажный QR") });
-      return;
-    }
-    setPaper(res.body);
-    setMessage({ kind: "ok", text: "Бумажный QR выпущен" });
-  }
 
   async function loadEmployeeQR() {
     if (!employeeID) {
@@ -189,29 +161,41 @@ export function QRPanel() {
     });
   }
 
-  async function downloadPDF() {
-    if (!paper) return;
-    const res = await fetch(`/api/admin/qr/paper/${paper.id}/pdf`, {
-      headers: { Authorization: `Bearer ${getToken()}` },
-    });
-    if (!res.ok) {
-      setMessage({ kind: "error", text: `не удалось получить PDF (HTTP ${res.status})` });
+  async function downloadPasses(employeeIDs: string[] = selectedEmployees) {
+    if (employeeIDs.length === 0) {
+      setMessage({ kind: "error", text: "выберите хотя бы одного сотрудника" });
       return;
     }
+    setPassBusy(true);
+    const res = await fetch("/api/admin/qr/passes/pdf", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${getToken()}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ employee_ids: employeeIDs }),
+    });
+    setPassBusy(false);
+    if (!res.ok) {
+      let text = `не удалось сформировать пропуска (HTTP ${res.status})`;
+      try {
+        const body = await res.json() as { error?: string };
+        if (body.error) text = body.error;
+      } catch {
+        // ответ не JSON
+      }
+      setMessage({ kind: "error", text });
+      return;
+    }
+    const printed = res.headers.get("X-Passes-Printed");
+    const skipped = res.headers.get("X-Passes-Skipped");
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
     window.open(url, "_blank");
-  }
-
-  async function revoke() {
-    if (!paper) return;
-    const res = await api(`/admin/qr/paper/${paper.id}/revoke`, { method: "POST" });
-    if (!res.ok) {
-      setMessage({ kind: "error", text: errorText(res.body, "не удалось отозвать QR") });
-      return;
-    }
-    setMessage({ kind: "ok", text: "QR отозван" });
-    setPaper(null);
+    setMessage({
+      kind: skipped && skipped !== "0" ? "error" : "ok",
+      text: `Пропусков в PDF: ${printed ?? "?"}${skipped && skipped !== "0" ? `, пропущено: ${skipped}` : ""}`,
+    });
   }
 
   return (
@@ -260,14 +244,17 @@ export function QRPanel() {
         </div>
         <div className="employee-picker">
           {filteredEmployees.map((employee) => (
-            <label key={employee.id} className="employee-picker-row">
+            <div key={employee.id} className="employee-picker-row">
               <input
                 type="checkbox"
                 checked={selectedEmployees.includes(employee.id)}
                 onChange={() => toggleEmployee(employee.id)}
               />
               <span><b>{employee.employee_number}</b> — {employee.full_name}</span>
-            </label>
+              <button type="button" className="secondary" onClick={() => void downloadPasses([employee.id])} disabled={passBusy}>
+                Печать пропуска
+              </button>
+            </div>
           ))}
           {filteredEmployees.length === 0 && <p>Сотрудники не найдены.</p>}
         </div>
@@ -275,7 +262,11 @@ export function QRPanel() {
           <button type="button" onClick={() => void generateBulkQR()} disabled={bulkQrBusy || selectedEmployees.length === 0}>
             {bulkQrBusy ? "Генерация…" : `Сгенерировать QR (${selectedEmployees.length})`}
           </button>
+          <button type="button" className="secondary" onClick={() => void downloadPasses()} disabled={passBusy || selectedEmployees.length === 0}>
+            {passBusy ? "Подготовка PDF…" : `Печать пропусков (${selectedEmployees.length})`}
+          </button>
         </div>
+        <p className="hint">Печать пропусков: карточка 85,6 × 53,98 мм, по 8 штук на листе A4. Если у сотрудника уже есть действующий бумажный QR, он будет использован повторно.</p>
         {bulkEmployees && (
           <>
             <p>Всего: {bulkEmployees.total}, создано: {bulkEmployees.created}, уже были: {bulkEmployees.existing}, ошибок: {bulkEmployees.errors}</p>
@@ -305,45 +296,21 @@ export function QRPanel() {
         )}
       </div>
 
-      <div className="columns">
-        <form className="card" onSubmit={issueStatic}>
-          <h3>Статический QR</h3>
-          <Field label="Данные (JSON)">
-            <textarea rows={5} className="mono" value={payload} onChange={(e) => setPayload(e.target.value)} />
-          </Field>
-          <Field label="Подпись (необязательно)">
-            <input value={signature} onChange={(e) => setSignature(e.target.value)} />
-          </Field>
-          <div className="actions"><button type="submit">Выпустить</button></div>
-        </form>
-
-        <form className="card" onSubmit={issuePaper}>
-          <h3>Бумажный QR</h3>
-          <p>Выпуск на срок по умолчанию; PDF/A-1b доступен после выпуска.</p>
-          <div className="actions">
-            <button type="submit">Выпустить бумажный</button>
-            {paper && <button type="button" onClick={() => void downloadPDF()}>Скачать PDF</button>}
-            {paper && <button type="button" onClick={() => void revoke()}>Отозвать</button>}
-          </div>
-          {paper && <p className="mono">{paper.token}</p>}
-        </form>
-
-        <div className="card">
-          <h3>Массовая загрузка</h3>
-          <p>JSON, NDJSON или ZIP.</p>
-          <input type="file" onChange={(e) => { const file = e.target.files?.[0]; if (file) void uploadBulk(file); }} />
-          {bulk && <p>Строк: {bulk.rows_total}, успешно: {bulk.rows_ok}, ошибок: {bulk.rows_error}</p>}
-          {bulk && bulk.rows_error > 0 && (
-            <table>
-              <thead><tr><th>Строка</th><th>Причина</th></tr></thead>
-              <tbody>
-                {bulk.rows.filter((row) => row.status !== "ok").slice(0, 50).map((row) => (
-                  <tr key={row.line}><td>{row.line}</td><td>{row.reason ?? "—"}</td></tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
+      <div className="card">
+        <h3>Массовая загрузка</h3>
+        <p>JSON, NDJSON или ZIP.</p>
+        <input type="file" onChange={(e) => { const file = e.target.files?.[0]; if (file) void uploadBulk(file); }} />
+        {bulk && <p>Строк: {bulk.rows_total}, успешно: {bulk.rows_ok}, ошибок: {bulk.rows_error}</p>}
+        {bulk && bulk.rows_error > 0 && (
+          <table>
+            <thead><tr><th>Строка</th><th>Причина</th></tr></thead>
+            <tbody>
+              {bulk.rows.filter((row) => row.status !== "ok").slice(0, 50).map((row) => (
+                <tr key={row.line}><td>{row.line}</td><td>{row.reason ?? "—"}</td></tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
     </section>
   );
@@ -373,340 +340,6 @@ type Mark = {
   mock_location?: boolean;
 };
 
-const OFFLINE_MAP_STYLE: maplibregl.StyleSpecification = {
-  version: 8,
-  glyphs: "/offline-fonts/{fontstack}/{range}.pbf",
-  sources: {
-    osm: {
-      type: "vector",
-      tiles: ["/offline-tiles/{z}/{x}/{y}.pbf"],
-      minzoom: 0,
-      maxzoom: 14,
-    },
-    buildings: {
-      type: "vector",
-      tiles: ["/offline-buildings/{z}/{x}/{y}.pbf"],
-      minzoom: 13,
-      maxzoom: 15,
-    },
-    marks: {
-      type: "geojson",
-      data: { type: "FeatureCollection", features: [] },
-    },
-  },
-  layers: [
-    { id: "background", type: "background", paint: { "background-color": "#eef0e9" } },
-    {
-      id: "landcover",
-      type: "fill",
-      source: "osm",
-      "source-layer": "landcover",
-      paint: {
-        "fill-color": [
-          "match", ["get", "class"],
-          "wood", "#cadfb9",
-          "forest", "#c4dcb4",
-          "grass", "#d7e6c7",
-          "farmland", "#ece8d2",
-          "#e4e9dc",
-        ],
-        "fill-opacity": 0.72,
-      },
-    },
-    {
-      id: "landuse",
-      type: "fill",
-      source: "osm",
-      "source-layer": "landuse",
-      paint: {
-        "fill-color": [
-          "match", ["get", "class"],
-          "residential", "#e9e5dd",
-          "park", "#cfe3c2",
-          "forest", "#c8dfba",
-          "industrial", "#e4e1da",
-          "#ebe7df",
-        ],
-        "fill-opacity": 0.75,
-      },
-    },
-    {
-      id: "water",
-      type: "fill",
-      source: "osm",
-      "source-layer": "water",
-      paint: { "fill-color": "#a9d2df", "fill-outline-color": "#91bdcf" },
-    },
-    {
-      id: "waterway",
-      type: "line",
-      source: "osm",
-      "source-layer": "waterway",
-      paint: { "line-color": "#aad3df", "line-width": ["interpolate", ["linear"], ["zoom"], 10, 1, 16, 4] },
-    },
-    {
-      id: "buildings",
-      type: "fill",
-      source: "osm",
-      "source-layer": "building",
-      minzoom: 13,
-      paint: {
-        "fill-color": ["match", ["get", "class"], "residential", "#d9d1c5", "#d5cabb"],
-        "fill-outline-color": "#bfb3a0",
-        "fill-opacity": 0.9,
-      },
-    },
-    {
-      id: "buildings-detailed",
-      type: "fill",
-      source: "buildings",
-      "source-layer": "buildings",
-      minzoom: 13,
-      paint: {
-        "fill-color": ["match", ["get", "class"], "residential", "#d3c9ba", "#cec1b0"],
-        "fill-outline-color": "#a89a85",
-        "fill-opacity": 0.95,
-      },
-    },
-    {
-      id: "railways",
-      type: "line",
-      source: "osm",
-      "source-layer": "transportation",
-      filter: ["==", ["get", "class"], "rail"],
-      paint: {
-        "line-color": "#9aa3ad",
-        "line-width": ["interpolate", ["linear"], ["zoom"], 12, 0.7, 16, 1.6],
-        "line-dasharray": [3, 2],
-      },
-    },
-    {
-      id: "road-casing",
-      type: "line",
-      source: "osm",
-      "source-layer": "transportation",
-      paint: {
-        "line-color": "#d8c6ae",
-        "line-width": ["interpolate", ["linear"], ["zoom"], 10, 1.2, 14, 4, 18, 14],
-        "line-gap-width": ["interpolate", ["linear"], ["zoom"], 10, 0.3, 14, 1.5, 18, 6],
-      },
-    },
-    {
-      id: "roads",
-      type: "line",
-      source: "osm",
-      "source-layer": "transportation",
-      paint: {
-        "line-color": [
-          "match", ["get", "class"],
-          "motorway", "#e5a15a",
-          "trunk", "#eeb06b",
-          "primary", "#f0c26f",
-          "secondary", "#f5d48d",
-          "tertiary", "#f8e7b8",
-          "#ffffff",
-        ],
-        "line-width": ["interpolate", ["linear"], ["zoom"], 10, 0.5, 14, 2.2, 18, 9],
-      },
-    },
-    {
-      id: "boundary",
-      type: "line",
-      source: "osm",
-      "source-layer": "boundary",
-      paint: { "line-color": "#9ca3af", "line-width": 1, "line-dasharray": [4, 3] },
-    },
-    {
-      id: "place-city",
-      type: "symbol",
-      source: "osm",
-      "source-layer": "place",
-      filter: ["==", ["get", "class"], "city"],
-      minzoom: 11,
-      maxzoom: 15,
-      layout: {
-        "text-field": ["coalesce", ["get", "name:ru"], ["get", "name"]],
-        "text-font": ["Noto Sans Bold"],
-        "text-size": ["interpolate", ["linear"], ["zoom"], 11, 14, 14, 19, 18, 24],
-        "text-letter-spacing": 0.02,
-        "text-max-width": 8,
-        "text-padding": 8,
-      },
-      paint: {
-        "text-color": "#26323f",
-        "text-halo-color": "#ffffff",
-        "text-halo-width": 2,
-        "text-halo-blur": 0.4,
-      },
-    },
-    {
-      id: "place-suburb",
-      type: "symbol",
-      source: "osm",
-      "source-layer": "place",
-      filter: ["match", ["get", "class"], ["suburb", "quarter", "neighbourhood"], true, false],
-      minzoom: 12,
-      maxzoom: 16,
-      layout: {
-        "text-field": ["coalesce", ["get", "name:ru"], ["get", "name"]],
-        "text-font": ["Noto Sans Regular"],
-        "text-size": ["interpolate", ["linear"], ["zoom"], 12, 10, 15, 13],
-        "text-letter-spacing": 0.08,
-        "text-transform": "uppercase",
-        "text-max-width": 9,
-        "text-padding": 5,
-      },
-      paint: {
-        "text-color": "#707b88",
-        "text-halo-color": "#ffffff",
-        "text-halo-width": 1.5,
-        "text-halo-blur": 0.5,
-      },
-    },
-    {
-      id: "road-labels-major",
-      type: "symbol",
-      source: "osm",
-      "source-layer": "transportation_name",
-      filter: ["match", ["get", "class"], ["motorway", "trunk", "primary", "secondary", "tertiary"], true, false],
-      minzoom: 13,
-      layout: {
-        "text-field": ["coalesce", ["get", "name:ru"], ["get", "name"]],
-        "text-font": ["Noto Sans Regular"],
-        "text-size": ["interpolate", ["linear"], ["zoom"], 13, 10, 17, 13],
-        "symbol-placement": "line",
-        "text-rotation-alignment": "map",
-        "text-pitch-alignment": "viewport",
-        "text-max-angle": 35,
-        "symbol-spacing": 350,
-        "text-padding": 4,
-      },
-      paint: {
-        "text-color": "#44505d",
-        "text-halo-color": "#ffffff",
-        "text-halo-width": 1.6,
-      },
-    },
-    {
-      id: "road-labels-minor",
-      type: "symbol",
-      source: "osm",
-      "source-layer": "transportation_name",
-      filter: ["match", ["get", "class"], ["minor", "service"], true, false],
-      minzoom: 15,
-      layout: {
-        "text-field": ["coalesce", ["get", "name:ru"], ["get", "name"]],
-        "text-font": ["Noto Sans Regular"],
-        "text-size": ["interpolate", ["linear"], ["zoom"], 15, 9.5, 18, 12],
-        "symbol-placement": "line",
-        "text-rotation-alignment": "map",
-        "text-pitch-alignment": "viewport",
-        "text-max-angle": 30,
-        "symbol-spacing": 300,
-        "text-padding": 3,
-      },
-      paint: {
-        "text-color": "#6b7280",
-        "text-halo-color": "#ffffff",
-        "text-halo-width": 1.4,
-      },
-    },
-    {
-      id: "water-labels",
-      type: "symbol",
-      source: "osm",
-      "source-layer": "water_name",
-      minzoom: 12,
-      layout: {
-        "text-field": ["coalesce", ["get", "name:ru"], ["get", "name"]],
-        "text-font": ["Noto Sans Italic"],
-        "text-size": ["interpolate", ["linear"], ["zoom"], 12, 10, 17, 14],
-        "text-max-width": 9,
-        "text-padding": 4,
-      },
-      paint: {
-        "text-color": "#4f7f92",
-        "text-halo-color": "#eff5f2",
-        "text-halo-width": 1.5,
-      },
-    },
-    {
-      id: "poi-labels",
-      type: "symbol",
-      source: "osm",
-      "source-layer": "poi",
-      filter: ["match", ["get", "class"], ["hospital", "school", "college", "university", "railway", "bus", "museum", "theatre", "park", "government"], true, false],
-      minzoom: 16,
-      layout: {
-        "text-field": ["coalesce", ["get", "name:ru"], ["get", "name"]],
-        "text-font": ["Noto Sans Regular"],
-        "text-size": ["interpolate", ["linear"], ["zoom"], 16, 9.5, 18, 11.5],
-        "text-max-width": 9,
-        "text-padding": 3,
-        "symbol-sort-key": ["get", "rank"],
-      },
-      paint: {
-        "text-color": "#4b5563",
-        "text-halo-color": "#ffffff",
-        "text-halo-width": 1.4,
-      },
-    },
-    {
-      id: "house-numbers",
-      type: "symbol",
-      source: "osm",
-      "source-layer": "housenumber",
-      minzoom: 17,
-      layout: {
-        "text-field": ["get", "housenumber"],
-        "text-font": ["Noto Sans Regular"],
-        "text-size": ["interpolate", ["linear"], ["zoom"], 17, 9, 18.5, 11],
-        "text-max-width": 4,
-        "text-padding": 2,
-      },
-      paint: {
-        "text-color": "#6b5b4a",
-        "text-halo-color": "#f4f1ea",
-        "text-halo-width": 1.5,
-      },
-    },
-    {
-      id: "marks-halo",
-      type: "circle",
-      source: "marks",
-      paint: {
-        "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 7, 14, 10, 18, 14],
-        "circle-color": "#ffffff",
-        "circle-opacity": 0.92,
-      },
-    },
-    {
-      id: "marks-selected",
-      type: "circle",
-      source: "marks",
-      filter: ["==", ["get", "id"], ""],
-      paint: {
-        "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 8, 14, 13, 18, 18],
-        "circle-color": "#1d4ed8",
-        "circle-opacity": 0.28,
-        "circle-stroke-color": "#1d4ed8",
-        "circle-stroke-width": 2,
-      },
-    },
-    {
-      id: "marks-circles",
-      type: "circle",
-      source: "marks",
-      paint: {
-        "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 4.5, 14, 7, 18, 10],
-        "circle-color": ["match", ["get", "event_type"], "check_out", "#d97706", "#15803d"],
-        "circle-stroke-color": ["case", ["get", "outside_office"], "#dc2626", "#ffffff"],
-        "circle-stroke-width": 2,
-      },
-    },
-  ],
-};
-
 function localDateTimeValue(date: Date) {
   const pad = (value: number) => String(value).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
@@ -724,6 +357,7 @@ const marksPageSize = 50;
 
 export function Marks() {
   const departments = useList<{ id: string; name: string }>("/admin/departments");
+  const offices = useList<OfficeMapItem>("/admin/offices");
   const positions = useList<{ id: string; name: string }>("/admin/positions");
   const [filter, setFilter] = useState({ employee: "", department_id: "", position_id: "", ...todayRange() });
   const [items, setItems] = useState<Mark[]>([]);
@@ -758,6 +392,62 @@ export function Marks() {
     }), "bottom-right");
 
     map.on("load", () => {
+      map.addSource("office-points", { type: "geojson", data: officePointCollection(offices.items) });
+      map.addSource("office-zones", { type: "geojson", data: officeZoneCollection(offices.items) });
+      map.addLayer({
+        id: "office-zone-fill",
+        type: "fill",
+        source: "office-zones",
+        paint: {
+          "fill-color": ["case", ["get", "is_active"], "#1d4ed8", "#6b7280"],
+          "fill-opacity": 0.13,
+        },
+      }, "marks-halo");
+      map.addLayer({
+        id: "office-zone-line",
+        type: "line",
+        source: "office-zones",
+        paint: {
+          "line-color": ["case", ["get", "is_active"], "#1d4ed8", "#6b7280"],
+          "line-width": 1.8,
+          "line-dasharray": [3, 2],
+        },
+      }, "marks-halo");
+      map.addLayer({
+        id: "office-point-halo",
+        type: "circle",
+        source: "office-points",
+        paint: { "circle-radius": 9, "circle-color": "#ffffff", "circle-opacity": 0.95 },
+      }, "marks-halo");
+      map.addLayer({
+        id: "office-point",
+        type: "circle",
+        source: "office-points",
+        paint: {
+          "circle-radius": 6,
+          "circle-color": ["case", ["get", "is_active"], "#15539c", "#6b7280"],
+          "circle-stroke-color": "#ffffff",
+          "circle-stroke-width": 2,
+        },
+      }, "marks-halo");
+      map.addLayer({
+        id: "office-labels",
+        type: "symbol",
+        source: "office-points",
+        layout: {
+          "text-field": ["get", "name"],
+          "text-font": ["Noto Sans Bold"],
+          "text-size": 11,
+          "text-offset": [0, 1.3],
+          "text-anchor": "top",
+          "text-max-width": 10,
+        },
+        paint: {
+          "text-color": "#152238",
+          "text-halo-color": "#ffffff",
+          "text-halo-width": 2,
+        },
+      }, "marks-halo");
       setMapReady(true);
       const selectMark = (event: maplibregl.MapLayerMouseEvent) => {
         const id = event.features?.[0]?.properties?.id;
@@ -797,6 +487,15 @@ export function Marks() {
         })),
     });
   }, [items, mapReady]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+    const points = map.getSource("office-points") as maplibregl.GeoJSONSource | undefined;
+    const zones = map.getSource("office-zones") as maplibregl.GeoJSONSource | undefined;
+    points?.setData(officePointCollection(offices.items) as GeoJSON.FeatureCollection);
+    zones?.setData(officeZoneCollection(offices.items) as GeoJSON.FeatureCollection);
+  }, [offices.items, mapReady]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -882,7 +581,7 @@ export function Marks() {
               <div>
                 <h3>Геоданные на карте Новосибирска</h3>
                 <p className="hint">
-                  Офлайн-карта с детализацией до домов. На текущей странице: {withGeo.length} отметок с координатами.
+                  Офлайн-карта с детализацией до домов. Синяя зона — разрешённая зона отметки офиса. На текущей странице: {withGeo.length} отметок с координатами.
                 </p>
               </div>
               <button type="button" onClick={() => setMapOpen((value) => !value)}>
@@ -1109,6 +808,34 @@ export function OAuthPanel() {
     await reload();
   }
 
+  async function toggleActive(client: OAuthClient) {
+    const res = await api<OAuthClient>(`/admin/oauth/clients/${client.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ is_active: !client.is_active }),
+    });
+    if (!res.ok) {
+      setMessage({ kind: "error", text: errorText(res.body, "не удалось изменить состояние клиента") });
+      return;
+    }
+    setMessage({ kind: "ok", text: client.is_active ? "Клиент отключён, выданные токены отозваны" : "Клиент включён" });
+    await reload();
+  }
+
+  async function removeClient(client: OAuthClient) {
+    if (!confirm(`Удалить OAuth-клиент «${client.name ?? client.client_id}»? Все его токены и IP-whitelist будут удалены.`)) return;
+    const res = await api(`/admin/oauth/clients/${client.id}`, { method: "DELETE" });
+    if (!res.ok) {
+      setMessage({ kind: "error", text: errorText(res.body, "не удалось удалить клиента") });
+      return;
+    }
+    if (whitelistFor === client.id) {
+      setWhitelistFor("");
+      setEntries([]);
+    }
+    setMessage({ kind: "ok", text: "OAuth-клиент удалён" });
+    await reload();
+  }
+
   async function loadWhitelist(id: string) {
     setWhitelistFor(id);
     const res = await api<WhitelistEntry[]>(`/admin/oauth/clients/${id}/whitelist`);
@@ -1139,16 +866,21 @@ export function OAuthPanel() {
       </form>
       {secret && <p className="ok mono">Секрет клиента: {secret}</p>}
       <table>
-        <thead><tr><th>Идентификатор клиента</th><th>Название</th><th>Следующая ротация</th><th /></tr></thead>
+        <thead><tr><th>Идентификатор клиента</th><th>Название</th><th>Статус</th><th>Следующая ротация</th><th /></tr></thead>
         <tbody>
           {items.map((client) => (
-            <tr key={client.id}>
+            <tr key={client.id} className={client.is_active ? "" : "muted"}>
               <td className="mono">{client.client_id}</td>
               <td>{client.name ?? "—"}</td>
+              <td>{client.is_active ? "активен" : "отключён"}</td>
               <td>{fmt(client.next_rotation_at)}</td>
               <td className="actions-cell">
                 <button type="button" onClick={() => void rotate(client.id)}>Ротировать</button>
                 <button type="button" onClick={() => void loadWhitelist(client.id)}>Разрешённые IP</button>
+                <button type="button" onClick={() => void toggleActive(client)}>
+                  {client.is_active ? "Отключить" : "Включить"}
+                </button>
+                <button type="button" className="danger" onClick={() => void removeClient(client)}>Удалить</button>
               </td>
             </tr>
           ))}
@@ -1213,6 +945,307 @@ export function OfflineImport() {
   );
 }
 
+/* ---------------- Настройки ---------------- */
+
+type SystemProfile = {
+  main_admin_email: string;
+  support_phone: string;
+  support_email: string;
+  company_name: string;
+  company_address: string;
+  company_inn: string;
+  website: string;
+  paper_qr_valid_days: number;
+  default_office_radius_m: number;
+  pass_footer: string;
+};
+
+const emptySystemProfile: SystemProfile = {
+  main_admin_email: "",
+  support_phone: "",
+  support_email: "",
+  company_name: "",
+  company_address: "",
+  company_inn: "",
+  website: "",
+  paper_qr_valid_days: 30,
+  default_office_radius_m: 150,
+  pass_footer: "",
+};
+
+type SystemConnectionSettings = {
+  database_url: string;
+  database_url_set: boolean;
+  redis_addr: string;
+  redis_password_set: boolean;
+  qr_private_key_set: boolean;
+  qr_public_key: string;
+  settings_db_path: string;
+  app_env: string;
+  restart_required?: boolean;
+};
+
+const emptySystemConnections: SystemConnectionSettings = {
+  database_url: "",
+  database_url_set: false,
+  redis_addr: "",
+  redis_password_set: false,
+  qr_private_key_set: false,
+  qr_public_key: "",
+  settings_db_path: "",
+  app_env: "",
+};
+
+export function SystemSettings() {
+  const [form, setForm] = useState<SystemProfile>(emptySystemProfile);
+  const [message, setMessage] = useState<Message>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [connections, setConnections] = useState<SystemConnectionSettings>(emptySystemConnections);
+  const [databaseURL, setDatabaseURL] = useState("");
+  const [redisAddr, setRedisAddr] = useState("");
+  const [redisPassword, setRedisPassword] = useState("");
+  const [connectionsMessage, setConnectionsMessage] = useState<Message>(null);
+  const [connectionsBusy, setConnectionsBusy] = useState(false);
+  const [testBusy, setTestBusy] = useState(false);
+  const [connectionsLoading, setConnectionsLoading] = useState(true);
+
+  useEffect(() => {
+    void (async () => {
+      const res = await api<SystemProfile>("/admin/profile");
+      if (res.ok && res.body) setForm({ ...emptySystemProfile, ...res.body });
+      else setMessage({ kind: "error", text: errorText(res.body, "не удалось загрузить настройки") });
+      setLoading(false);
+    })();
+  }, []);
+
+  useEffect(() => {
+    void (async () => {
+      const res = await api<SystemConnectionSettings>("/admin/system-settings");
+      if (res.ok && res.body) {
+        setConnections({ ...emptySystemConnections, ...res.body });
+        setRedisAddr(res.body.redis_addr);
+      } else {
+        setConnectionsMessage({ kind: "error", text: errorText(res.body, "не удалось загрузить системные настройки") });
+      }
+      setConnectionsLoading(false);
+    })();
+  }, []);
+
+  function update<K extends keyof SystemProfile>(key: K, value: SystemProfile[K]) {
+    setForm((current) => ({ ...current, [key]: value }));
+  }
+
+  async function save(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    const res = await api<SystemProfile>("/admin/profile", { method: "PUT", body: JSON.stringify(form) });
+    setBusy(false);
+    if (!res.ok || !res.body) {
+      setMessage({ kind: "error", text: errorText(res.body, "не удалось сохранить настройки") });
+      return;
+    }
+    setForm({ ...emptySystemProfile, ...res.body });
+    setMessage({ kind: "ok", text: "Настройки сохранены" });
+  }
+
+  async function testConnections() {
+    setTestBusy(true);
+    setConnectionsMessage(null);
+    const res = await api("/admin/system-settings/test", {
+      method: "POST",
+      body: JSON.stringify({
+        database_url: databaseURL.trim(),
+        redis_addr: redisAddr.trim(),
+        redis_password: redisPassword,
+      }),
+    });
+    setTestBusy(false);
+    if (!res.ok) {
+      setConnectionsMessage({ kind: "error", text: errorText(res.body, "не удалось подключиться") });
+      return;
+    }
+    setConnectionsMessage({ kind: "ok", text: "PostgreSQL и Redis доступны" });
+  }
+
+  async function saveConnections(event: FormEvent) {
+    event.preventDefault();
+    setConnectionsBusy(true);
+    setConnectionsMessage(null);
+    const res = await api<SystemConnectionSettings>("/admin/system-settings", {
+      method: "PUT",
+      body: JSON.stringify({
+        database_url: databaseURL.trim(),
+        redis_addr: redisAddr.trim(),
+        redis_password: redisPassword,
+      }),
+    });
+    setConnectionsBusy(false);
+    if (!res.ok || !res.body) {
+      setConnectionsMessage({ kind: "error", text: errorText(res.body, "не удалось сохранить подключения") });
+      return;
+    }
+    setConnections({ ...emptySystemConnections, ...res.body });
+    setRedisAddr(res.body.redis_addr);
+    setDatabaseURL("");
+    setRedisPassword("");
+    setConnectionsMessage({
+      kind: "ok",
+      text: res.body.restart_required
+        ? "Подключения сохранены. Для применения перезапустите backend."
+        : "Подключения проверены, изменения не требовались.",
+    });
+  }
+
+  return (
+    <section>
+      <h2>Настройки системы</h2>
+      <Notice message={message} />
+      {loading ? <p>Загрузка…</p> : (
+        <form onSubmit={save}>
+          <div className="card">
+            <h3>Организация</h3>
+            <div className="grid">
+              <Field label="Название компании (печатается на пропуске)">
+                <input
+                  value={form.company_name}
+                  onChange={(e) => update("company_name", e.target.value)}
+                  maxLength={200}
+                  placeholder="Например, ООО «Ромашка»"
+                />
+              </Field>
+              <Field label="ИНН">
+                <input value={form.company_inn} onChange={(e) => update("company_inn", e.target.value)} maxLength={12} />
+              </Field>
+            </div>
+            <Field label="Юридический адрес">
+              <input value={form.company_address} onChange={(e) => update("company_address", e.target.value)} maxLength={300} />
+            </Field>
+            <Field label="Сайт">
+              <input value={form.website} onChange={(e) => update("website", e.target.value)} maxLength={200} placeholder="https://example.ru" />
+            </Field>
+          </div>
+
+          <div className="card">
+            <h3>Контакты</h3>
+            <div className="grid">
+              <Field label="Телефон поддержки">
+                <input value={form.support_phone} onChange={(e) => update("support_phone", e.target.value)} maxLength={40} />
+              </Field>
+              <Field label="Email поддержки">
+                <input type="email" value={form.support_email} onChange={(e) => update("support_email", e.target.value)} maxLength={200} />
+              </Field>
+              <Field label="Email главного администратора">
+                <input type="email" value={form.main_admin_email} onChange={(e) => update("main_admin_email", e.target.value)} maxLength={200} />
+              </Field>
+            </div>
+          </div>
+
+          <div className="card">
+            <h3>Пропуска и офисы</h3>
+            <div className="grid">
+              <Field label="Срок действия бумажного пропуска, дней">
+                <input
+                  type="number"
+                  min={1}
+                  max={365}
+                  value={form.paper_qr_valid_days}
+                  onChange={(e) => update("paper_qr_valid_days", Number(e.target.value))}
+                />
+              </Field>
+              <Field label="Радиус зоны офиса по умолчанию, м">
+                <input
+                  type="number"
+                  min={10}
+                  max={10000}
+                  value={form.default_office_radius_m}
+                  onChange={(e) => update("default_office_radius_m", Number(e.target.value))}
+                />
+              </Field>
+            </div>
+            <Field label="Строка в нижнем колонтитуле пропуска">
+              <input
+                value={form.pass_footer}
+                onChange={(e) => update("pass_footer", e.target.value)}
+                maxLength={200}
+                placeholder="Например, ООО «Ромашка» · отдел кадров"
+              />
+            </Field>
+            <p className="hint">Название компании печатается в шапке пропуска. Если поле пустое, используется «Табель».</p>
+          </div>
+
+          <div className="actions">
+            <button type="submit" disabled={busy}>{busy ? "Сохранение…" : "Сохранить все настройки"}</button>
+          </div>
+        </form>
+      )}
+
+      <div className="card">
+        <h3>Подключение к серверам</h3>
+        <Notice message={connectionsMessage} />
+        {connectionsLoading ? <p>Загрузка…</p> : (
+          <form onSubmit={saveConnections}>
+            <Field label="Новая строка подключения PostgreSQL">
+              <input
+                type="password"
+                value={databaseURL}
+                onChange={(e) => setDatabaseURL(e.target.value)}
+                placeholder="Оставьте пустым, чтобы не менять"
+                autoComplete="new-password"
+              />
+            </Field>
+            <p className="hint mono">
+              Текущее подключение: {connections.database_url_set ? connections.database_url : "не задано"}
+            </p>
+            <div className="grid">
+              <Field label="Адрес Redis (host:port)">
+                <input value={redisAddr} onChange={(e) => setRedisAddr(e.target.value)} placeholder="redis:6379" />
+              </Field>
+              <Field label="Новый пароль Redis">
+                <input
+                  type="password"
+                  value={redisPassword}
+                  onChange={(e) => setRedisPassword(e.target.value)}
+                  placeholder={connections.redis_password_set ? "Задан, оставьте пустым" : "Не задан"}
+                  autoComplete="new-password"
+                />
+              </Field>
+            </div>
+            <p className="hint">
+              Проверка PostgreSQL создаёт указанную базу при необходимости и применяет миграции.
+              При смене адреса Redis пустой пароль означает подключение без пароля.
+              Изменения подключений вступают в силу после перезапуска backend.
+            </p>
+            <div className="actions">
+              <button type="button" onClick={() => void testConnections()} disabled={testBusy || connectionsBusy}>
+                {testBusy ? "Проверка…" : "Проверить подключение"}
+              </button>
+              <button type="submit" disabled={connectionsBusy || testBusy}>
+                {connectionsBusy ? "Сохранение…" : "Сохранить подключения"}
+              </button>
+            </div>
+          </form>
+        )}
+      </div>
+
+      <InfraSettings />
+
+      <div className="card">
+        <h3>QR-ключ и хранилище настроек</h3>
+        <p>Приватный ключ QR: {connections.qr_private_key_set ? "задан" : "не задан"}. Ключ хранится в зашифрованном виде и не отображается.</p>
+        {connections.qr_public_key && (
+          <details>
+            <summary>Публичный ключ QR</summary>
+            <textarea className="mono" readOnly rows={7} value={connections.qr_public_key} />
+          </details>
+        )}
+        <p className="hint mono">Хранилище: {connections.settings_db_path || "—"}</p>
+        <p className="hint mono">Окружение: {connections.app_env || "—"}</p>
+      </div>
+    </section>
+  );
+}
+
 /* ---------------- Аудит ---------------- */
 
 type AuditEntry = {
@@ -1244,17 +1277,52 @@ function auditSummary(entry: AuditEntry): string {
   return action;
 }
 
+type AuditFilters = {
+  from: string;
+  to: string;
+  action: string;
+  entity_type: string;
+  actor_user_id: string;
+  ip: string;
+};
+
+const emptyAuditFilters: AuditFilters = {
+  from: "",
+  to: "",
+  action: "",
+  entity_type: "",
+  actor_user_id: "",
+  ip: "",
+};
+
+const auditPageSize = 50;
+
 export function Audit() {
-  const { items, loading, message, reload } = useList<AuditEntry>("/admin/audit?limit=200");
   const users = useList<UserLite>("/admin/users?limit=500");
   const employees = useList<Employee>("/admin/employees?limit=500");
+  const [filters, setFilters] = useState<AuditFilters>(emptyAuditFilters);
+  const [page, setPage] = useState(0);
   const [selected, setSelected] = useState<AuditEntry | null>(null);
+
+  const params = new URLSearchParams();
+  params.set("limit", String(auditPageSize + 1));
+  params.set("offset", String(page * auditPageSize));
+  if (filters.action) params.set("action", filters.action);
+  if (filters.entity_type) params.set("entity_type", filters.entity_type);
+  if (filters.actor_user_id) params.set("actor_user_id", filters.actor_user_id);
+  if (filters.ip.trim()) params.set("ip", filters.ip.trim());
+  if (filters.from) params.set("from", new Date(filters.from).toISOString());
+  if (filters.to) params.set("to", new Date(filters.to).toISOString());
+  const { items: loaded, loading, message, reload } = useList<AuditEntry>(`/admin/audit?${params.toString()}`);
+  const hasMore = loaded.length > auditPageSize;
+  const items = loaded.slice(0, auditPageSize);
+
   const userByID = new Map(users.items.map((user) => [user.id, user]));
   const employeeByID = new Map(employees.items.map((employee) => [employee.id, employee]));
   const actorText = (id: string | null) => {
     if (!id) return "система";
     const user = userByID.get(id);
-    return user ? user.login : id;
+    return user ? (user.full_name ? `${user.login} — ${user.full_name}` : user.login) : id;
   };
   const employeeText = (id: string | null | undefined) => {
     if (!id) return "—";
@@ -1267,13 +1335,57 @@ export function Audit() {
     }
     return auditValueLabel(key, value);
   };
+  function updateFilter<K extends keyof AuditFilters>(key: K, value: AuditFilters[K]) {
+    setPage(0);
+    setFilters((current) => ({ ...current, [key]: value }));
+  }
+  function resetFilters() {
+    setPage(0);
+    setFilters(emptyAuditFilters);
+  }
+
   return (
     <section>
       <h2>Аудит</h2>
       <Notice message={message} />
-      <div className="actions"><button type="button" onClick={() => void reload()} disabled={loading}>Обновить</button></div>
+      <div className="actions">
+        <button type="button" onClick={() => void reload()} disabled={loading}>Обновить</button>
+        <button type="button" className="secondary" onClick={resetFilters}>Сбросить фильтры</button>
+      </div>
       <table>
-        <thead><tr><th>Время</th><th>Что выполнено</th><th>Объект</th><th>Пользователь</th><th>IP-адрес</th><th /></tr></thead>
+        <thead>
+          <tr><th>Время</th><th>Что выполнено</th><th>Объект</th><th>Пользователь</th><th>IP-адрес</th><th /></tr>
+          <tr className="filter-row">
+            <th>
+              <div className="audit-time-filter">
+                <input type="datetime-local" aria-label="С даты" value={filters.from} onChange={(e) => updateFilter("from", e.target.value)} />
+                <input type="datetime-local" aria-label="По дату" value={filters.to} onChange={(e) => updateFilter("to", e.target.value)} />
+              </div>
+            </th>
+            <th>
+              <select aria-label="Действие" value={filters.action} onChange={(e) => updateFilter("action", e.target.value)}>
+                <option value="">Все действия</option>
+                {auditActionOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+              </select>
+            </th>
+            <th>
+              <select aria-label="Объект" value={filters.entity_type} onChange={(e) => updateFilter("entity_type", e.target.value)}>
+                <option value="">Все объекты</option>
+                {auditEntityOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+              </select>
+            </th>
+            <th>
+              <select aria-label="Пользователь" value={filters.actor_user_id} onChange={(e) => updateFilter("actor_user_id", e.target.value)}>
+                <option value="">Все пользователи</option>
+                {users.items.map((user) => (
+                  <option key={user.id} value={user.id}>{user.login}{user.full_name ? ` — ${user.full_name}` : ""}</option>
+                ))}
+              </select>
+            </th>
+            <th><input aria-label="IP-адрес" placeholder="Фильтр по IP" value={filters.ip} onChange={(e) => updateFilter("ip", e.target.value)} /></th>
+            <th />
+          </tr>
+        </thead>
         <tbody>
           {items.map((entry) => (
             <tr key={entry.id}>
@@ -1281,12 +1393,18 @@ export function Audit() {
               <td>{auditSummary(entry)}</td>
               <td>{auditEntityLabel(entry.entity_type)}</td>
               <td>{actorText(entry.actor_user_id)}</td>
-              <td>{entry.ip ?? "—"}</td>
+              <td className="mono">{entry.ip ?? "—"}</td>
               <td><button type="button" className="secondary" onClick={() => setSelected(entry)}>Подробности</button></td>
             </tr>
           ))}
+          {!loading && items.length === 0 && <tr><td colSpan={6}>Записей нет</td></tr>}
         </tbody>
       </table>
+      <div className="actions">
+        <button type="button" onClick={() => setPage((value) => Math.max(0, value - 1))} disabled={loading || page === 0}>Назад</button>
+        <span>Страница {page + 1}</span>
+        <button type="button" onClick={() => setPage((value) => value + 1)} disabled={loading || !hasMore}>Вперёд</button>
+      </div>
       {loading && <p>Загрузка…</p>}
       {selected && (
         <div className="modal-backdrop" onClick={() => setSelected(null)}>
@@ -1316,4 +1434,3 @@ export function Audit() {
     </section>
   );
 }
-

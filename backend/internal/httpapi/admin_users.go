@@ -242,7 +242,7 @@ func (s *Server) handleUpdateUserRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if target.Role == "admin" && role != "admin" {
-		admins, err := rp.ListUsers(r.Context(), "admin", 500, 0)
+		admins, err := rp.ListUsers(r.Context(), "admin", "", 500, 0)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "не удалось проверить администраторов")
 			return

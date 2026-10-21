@@ -437,6 +437,8 @@ button.danger.small {
 }
 .employee-picker-row:last-child { border-bottom: 0; }
 .employee-picker-row input { width: auto; }
+.employee-picker-row span { flex: 1; }
+.employee-picker-row button { flex: none; }
 .map-card-header {
   display: flex;
   align-items: flex-start;
@@ -456,6 +458,7 @@ button.danger.small {
   border: 1px solid #cfd8e3;
   background: #eef3f7;
 }
+.office-map { height: clamp(360px, 48vw, 560px); }
 .offline-map .maplibregl-canvas { outline: none; }
 .offline-map .maplibregl-ctrl-attrib { font-size: 11px; }
 .offline-map .maplibregl-ctrl-group button { width: 34px; height: 34px; }
@@ -470,4 +473,25 @@ button.danger.small {
 .row-invalid td {
   background: #fef2f2;
   color: #991b1b;
+}
+
+.filter-row th {
+  padding-top: 6px;
+  padding-bottom: 8px;
+  background: #f6f8fb;
+}
+.filter-row input,
+.filter-row select {
+  width: 100%;
+  min-width: 130px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+.audit-time-filter {
+  display: grid;
+  gap: 4px;
+  min-width: 190px;
+}
+.audit-time-filter input {
+  min-width: 180px;
 }

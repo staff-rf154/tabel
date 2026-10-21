@@ -101,11 +101,16 @@ func (s *Server) handleSetupTestDB(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	if err := app.TestDatabase(ctx, req.DatabaseURL); err != nil {
+	created, err := app.TestDatabase(ctx, req.DatabaseURL)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":               true,
+		"database_created": created,
+		"schema_ready":     true,
+	})
 }
 
 func (s *Server) handleSetupSave(w http.ResponseWriter, r *http.Request) {

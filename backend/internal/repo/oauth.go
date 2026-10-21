@@ -199,3 +199,61 @@ func (r *Repo) IPAllowed(ctx context.Context, clientUUID string, ip net.IP) (boo
 	}
 	return false, nil
 }
+
+// SetOAuthClientActive включает или отключает клиента. При отключении все
+// выданные клиенту access-токены сразу отзываются.
+func (r *Repo) SetOAuthClientActive(ctx context.Context, id string, active bool) (OAuthClient, error) {
+	tx, err := r.Pool.Begin(ctx)
+	if err != nil {
+		return OAuthClient{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var client OAuthClient
+	err = scanOAuthClient(tx.QueryRow(ctx, `
+UPDATE oauth_clients
+SET is_active = $2, updated_at = now()
+WHERE id = $1::uuid
+RETURNING `+oauthClientColumns, id, active), &client)
+	if isNoRows(err) {
+		return OAuthClient{}, ErrNotFound
+	}
+	if err != nil {
+		return OAuthClient{}, err
+	}
+	if !active {
+		if _, err := tx.Exec(ctx, `DELETE FROM oauth_access_tokens WHERE client_id = $1`, client.ClientID); err != nil {
+			return OAuthClient{}, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return OAuthClient{}, err
+	}
+	return client, nil
+}
+
+// DeleteOAuthClient удаляет клиента вместе с выданными токенами. Записи
+// whitelist удаляются каскадно.
+func (r *Repo) DeleteOAuthClient(ctx context.Context, id string) error {
+	tx, err := r.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var clientID string
+	err = tx.QueryRow(ctx, `SELECT client_id FROM oauth_clients WHERE id = $1::uuid`, id).Scan(&clientID)
+	if isNoRows(err) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM oauth_access_tokens WHERE client_id = $1`, clientID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM oauth_clients WHERE id = $1::uuid`, id); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}

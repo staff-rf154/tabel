@@ -116,22 +116,23 @@ type PositionInput struct {
 }
 
 type QRToken struct {
-	ID          string
-	EmployeeID  string
-	Type        string
-	Token       string
-	Payload     []byte
-	Signature   string
-	ValidFrom   *string
-	ValidUntil  *string
+	ID            string
+	EmployeeID    string
+	Type          string
+	Token         string
+	Payload       []byte
+	Signature     string
+	ValidFrom     *string
+	ValidUntil    *string
 	Status        string
 	RevokedReason *string
 	EmployeeOK    bool
-	EmployeeNum string
-	FullName    string
-	Position    *string
-	Phone       *string
-	Email       *string
+	EmployeeNum   string
+	FullName      string
+	Position      *string
+	Department    *string
+	Phone         *string
+	Email         *string
 }
 
 type Mark struct {
@@ -228,6 +229,9 @@ type Schedule struct {
 	ValidTo     *string `json:"valid_to"`
 	IsActive    bool    `json:"is_active"`
 	SourceFile  *string `json:"source_file,omitempty"`
+
+	EmployeeNumber   string `json:"employee_number,omitempty"`
+	EmployeeFullName string `json:"employee_full_name,omitempty"`
 }
 
 type ScheduleTemplate struct {
@@ -300,13 +304,15 @@ type AuditEntry struct {
 }
 
 type AuditFilter struct {
-	Action     string
-	EntityType string
-	EntityID   string
-	From       *time.Time
-	To         *time.Time
-	Limit      int
-	Offset     int
+	Action      string
+	EntityType  string
+	EntityID    string
+	ActorUserID string
+	IP          string
+	From        *time.Time
+	To          *time.Time
+	Limit       int
+	Offset      int
 }
 
 type Notification struct {

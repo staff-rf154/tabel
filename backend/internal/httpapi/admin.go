@@ -159,11 +159,15 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "недопустимая роль")
 		return
 	}
+	search := strings.TrimSpace(r.URL.Query().Get("q"))
+	if len([]rune(search)) < 3 {
+		search = ""
+	}
 	limit, offset, ok := pagination(w, r)
 	if !ok {
 		return
 	}
-	users, err := rp.ListUsers(r.Context(), role, limit, offset)
+	users, err := rp.ListUsers(r.Context(), role, search, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "не удалось получить список пользователей")
 		return
@@ -265,13 +269,29 @@ func (s *Server) handleResetRegistration(w http.ResponseWriter, r *http.Request)
 }
 
 type adminProfileResponse struct {
-	MainAdminEmail string `json:"main_admin_email"`
-	SupportPhone   string `json:"support_phone"`
+	MainAdminEmail       string `json:"main_admin_email"`
+	SupportPhone         string `json:"support_phone"`
+	SupportEmail         string `json:"support_email"`
+	CompanyName          string `json:"company_name"`
+	CompanyAddress       string `json:"company_address"`
+	CompanyINN           string `json:"company_inn"`
+	Website              string `json:"website"`
+	PaperQRValidDays     int    `json:"paper_qr_valid_days"`
+	DefaultOfficeRadiusM int    `json:"default_office_radius_m"`
+	PassFooter           string `json:"pass_footer"`
 }
 
 type adminProfileRequest struct {
-	MainAdminEmail *string `json:"main_admin_email"`
-	SupportPhone   *string `json:"support_phone"`
+	MainAdminEmail       *string `json:"main_admin_email"`
+	SupportPhone         *string `json:"support_phone"`
+	SupportEmail         *string `json:"support_email"`
+	CompanyName          *string `json:"company_name"`
+	CompanyAddress       *string `json:"company_address"`
+	CompanyINN           *string `json:"company_inn"`
+	Website              *string `json:"website"`
+	PaperQRValidDays     *int    `json:"paper_qr_valid_days"`
+	DefaultOfficeRadiusM *int    `json:"default_office_radius_m"`
+	PassFooter           *string `json:"pass_footer"`
 }
 
 func (s *Server) handleGetAdminProfile(w http.ResponseWriter, r *http.Request) {
@@ -293,7 +313,21 @@ func (s *Server) handleUpdateAdminProfile(w http.ResponseWriter, r *http.Request
 			}
 		}
 		if err := s.store.SetString(settings.KeyMainAdminEmail, value, false); err != nil {
-			writeError(w, http.StatusInternalServerError, "не удалось сохранить email")
+			writeError(w, http.StatusInternalServerError, "не удалось сохранить email администратора")
+			return
+		}
+	}
+	if req.SupportEmail != nil {
+		value := strings.TrimSpace(*req.SupportEmail)
+		if value != "" {
+			addr, err := mail.ParseAddress(value)
+			if err != nil || addr.Address != value {
+				writeError(w, http.StatusBadRequest, "support_email должен быть корректным email")
+				return
+			}
+		}
+		if err := s.store.SetString(settings.KeySupportEmail, value, false); err != nil {
+			writeError(w, http.StatusInternalServerError, "не удалось сохранить email поддержки")
 			return
 		}
 	}
@@ -301,6 +335,52 @@ func (s *Server) handleUpdateAdminProfile(w http.ResponseWriter, r *http.Request
 		value := strings.TrimSpace(*req.SupportPhone)
 		if err := s.store.SetString(settings.KeySupportPhone, value, false); err != nil {
 			writeError(w, http.StatusInternalServerError, "не удалось сохранить телефон поддержки")
+			return
+		}
+	}
+	textFields := []struct {
+		value *string
+		key   string
+		limit int
+		label string
+	}{
+		{req.CompanyName, settings.KeyCompanyName, 200, "company_name"},
+		{req.CompanyAddress, settings.KeyCompanyAddress, 300, "company_address"},
+		{req.CompanyINN, settings.KeyCompanyINN, 12, "company_inn"},
+		{req.Website, settings.KeyWebsite, 200, "website"},
+		{req.PassFooter, settings.KeyPassFooter, 200, "pass_footer"},
+	}
+	for _, field := range textFields {
+		if field.value == nil {
+			continue
+		}
+		value := strings.TrimSpace(*field.value)
+		if len(value) > field.limit {
+			writeError(w, http.StatusBadRequest, field.label+" превышает допустимую длину")
+			return
+		}
+		if err := s.store.SetString(field.key, value, false); err != nil {
+			writeError(w, http.StatusInternalServerError, "не удалось сохранить настройку "+field.label)
+			return
+		}
+	}
+	if req.PaperQRValidDays != nil {
+		if *req.PaperQRValidDays < 1 || *req.PaperQRValidDays > 365 {
+			writeError(w, http.StatusBadRequest, "paper_qr_valid_days должен быть от 1 до 365")
+			return
+		}
+		if err := s.store.SetString(settings.KeyPaperQRValidDays, strconv.Itoa(*req.PaperQRValidDays), false); err != nil {
+			writeError(w, http.StatusInternalServerError, "не удалось сохранить срок действия пропуска")
+			return
+		}
+	}
+	if req.DefaultOfficeRadiusM != nil {
+		if *req.DefaultOfficeRadiusM < 10 || *req.DefaultOfficeRadiusM > 10000 {
+			writeError(w, http.StatusBadRequest, "default_office_radius_m должен быть от 10 до 10000")
+			return
+		}
+		if err := s.store.SetString(settings.KeyDefaultOfficeRadius, strconv.Itoa(*req.DefaultOfficeRadiusM), false); err != nil {
+			writeError(w, http.StatusInternalServerError, "не удалось сохранить радиус офиса по умолчанию")
 			return
 		}
 	}
@@ -314,7 +394,36 @@ func (s *Server) handleUpdateAdminProfile(w http.ResponseWriter, r *http.Request
 func (s *Server) adminProfile() adminProfileResponse {
 	email, _ := s.store.GetString(settings.KeyMainAdminEmail)
 	phone, _ := s.store.GetString(settings.KeySupportPhone)
-	return adminProfileResponse{MainAdminEmail: email, SupportPhone: phone}
+	supportEmail, _ := s.store.GetString(settings.KeySupportEmail)
+	company, _ := s.store.GetString(settings.KeyCompanyName)
+	address, _ := s.store.GetString(settings.KeyCompanyAddress)
+	inn, _ := s.store.GetString(settings.KeyCompanyINN)
+	website, _ := s.store.GetString(settings.KeyWebsite)
+	footer, _ := s.store.GetString(settings.KeyPassFooter)
+	return adminProfileResponse{
+		MainAdminEmail:       email,
+		SupportPhone:         phone,
+		SupportEmail:         supportEmail,
+		CompanyName:          company,
+		CompanyAddress:       address,
+		CompanyINN:           inn,
+		Website:              website,
+		PaperQRValidDays:     s.settingInt(settings.KeyPaperQRValidDays, 30),
+		DefaultOfficeRadiusM: s.settingInt(settings.KeyDefaultOfficeRadius, 150),
+		PassFooter:           footer,
+	}
+}
+
+func (s *Server) settingInt(key string, fallback int) int {
+	raw, err := s.store.GetString(key)
+	if err != nil || strings.TrimSpace(raw) == "" {
+		return fallback
+	}
+	value, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || value <= 0 {
+		return fallback
+	}
+	return value
 }
 
 func (s *Server) handleListAudit(w http.ResponseWriter, r *http.Request) {
@@ -325,9 +434,17 @@ func (s *Server) handleListAudit(w http.ResponseWriter, r *http.Request) {
 	}
 	query := r.URL.Query()
 	filter := repo.AuditFilter{
-		Action:     strings.TrimSpace(query.Get("action")),
-		EntityType: strings.TrimSpace(query.Get("entity_type")),
-		EntityID:   strings.TrimSpace(query.Get("entity_id")),
+		Action:      strings.TrimSpace(query.Get("action")),
+		EntityType:  strings.TrimSpace(query.Get("entity_type")),
+		EntityID:    strings.TrimSpace(query.Get("entity_id")),
+		ActorUserID: strings.TrimSpace(query.Get("actor_user_id")),
+		IP:          strings.TrimSpace(query.Get("ip")),
+	}
+	if filter.ActorUserID != "" {
+		if _, err := uuid.Parse(filter.ActorUserID); err != nil {
+			writeError(w, http.StatusBadRequest, "actor_user_id должен быть UUID")
+			return
+		}
 	}
 	var err error
 	if raw := strings.TrimSpace(query.Get("from")); raw != "" {

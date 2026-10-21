@@ -222,31 +222,101 @@ export function Imports() {
 /* ---------------- Демо-данные ---------------- */
 /* ---------------- Демо-данные ---------------- */
 
+type DemoOAuthCredential = {
+  client_id: string;
+  client_secret: string;
+  access_token: string;
+};
+
+type DemoResetResult = {
+  employees: number;
+  users: number;
+  schedules: number;
+  shifts: number;
+  marks: number;
+  offices: number;
+  notifications: number;
+  delegations: number;
+  audit_records: number;
+  qr_static: number;
+  qr_paper: number;
+  demo_password: string;
+  oauth_clients: DemoOAuthCredential[];
+};
+
 export function DemoPanel() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<Message>(null);
+  const [result, setResult] = useState<DemoResetResult | null>(null);
 
-  async function run(path: string, successText: string) {
+  async function reset() {
+    if (!confirm("Полностью заменить данные системы демонстрационным набором? Сотрудники, отметки, графики, офисы, уведомления, делегирования, QR, OAuth-клиенты и журнал аудита будут удалены.")) return;
     setBusy(true);
     setMessage(null);
-    const res = await api<{ seeded?: number; removed?: number }>(path, { method: "POST", body: JSON.stringify({}) });
+    setResult(null);
+    const res = await api<DemoResetResult>("/admin/demo/reset", { method: "POST", body: JSON.stringify({}) });
     setBusy(false);
-    if (!res.ok) {
-      setMessage({ kind: "error", text: errorText(res.body, "операция не удалась") });
+    if (!res.ok || !res.body) {
+      setMessage({ kind: "error", text: errorText(res.body, "не удалось заменить демо-данные") });
       return;
     }
-    setMessage({ kind: "ok", text: successText });
+    setResult(res.body);
+    setMessage({ kind: "ok", text: "Демонстрационная база заменена. Пароль всех учётных записей: " + res.body.demo_password });
   }
 
   return (
     <section>
       <h2>Демонстрационная база</h2>
-      <p className="hint">Загружает 10 демонстрационных сотрудников с телефонами, почтой, отделами, должностями, графиками и закрытыми сменами за последние 3 недели. Кнопка очистки удаляет демо-данные и демонстрационные учётные записи, кроме главного администратора.</p>
+      <p className="hint">
+        Полностью заменяет данные системы демонстрационным набором: 100 сотрудников
+        с табельными номерами «н-00000001»…«н-00000100», 100 учётных записей,
+        4 графика, смены и отметки за 3 месяца, QR для всех сотрудников, офисы,
+        уведомления, делегирования, OAuth-клиенты, компания и журнал аудита.
+        Главный администратор сохраняется, но его пароль также меняется.
+      </p>
       <div className="form-actions">
-        <button type="button" disabled={busy} onClick={() => void run("/admin/demo/seed", "Демо-данные загружены (10 сотрудников)")}>Загрузить демо-данные</button>
-        <button type="button" className="danger" disabled={busy} onClick={() => { if (confirm("Удалить все демо-данные?")) void run("/admin/demo/clear", "Демо-данные удалены"); }}>Очистить демо-базу</button>
+        <button type="button" className="danger" disabled={busy} onClick={() => void reset()}>
+          {busy ? "Заполнение… это может занять несколько секунд" : "Заменить все данные демо-набором"}
+        </button>
       </div>
       <Notice message={message} />
+      {result && (
+        <div className="card">
+          <h3>Создано</h3>
+          <ul className="columns">
+            <li>Сотрудников: {result.employees}</li>
+            <li>Пользователей: {result.users} (включая admin)</li>
+            <li>Графиков: {result.schedules}</li>
+            <li>Смен: {result.shifts}</li>
+            <li>Отметок: {result.marks}</li>
+            <li>Офисов: {result.offices}</li>
+            <li>Уведомлений: {result.notifications}</li>
+            <li>Делегирований: {result.delegations}</li>
+            <li>Записей аудита: {result.audit_records}</li>
+            <li>Статических QR: {result.qr_static}</li>
+            <li>Бумажных QR: {result.qr_paper}</li>
+          </ul>
+          <p>Пароль всех пользователей, включая admin: <code>{result.demo_password}</code></p>
+          <p className="hint">
+            Логины сотрудников сформированы из ФИО по правилу «ФамилияИ».
+            При совпадении добавляются следующие буквы имени: например, ИвановИ, ИвановИв, ИвановИва.
+            Логин главного администратора: admin.
+          </p>
+          <h3>OAuth-клиенты и токены</h3>
+          <table>
+            <thead><tr><th>client_id</th><th>client_secret</th><th>access_token</th></tr></thead>
+            <tbody>
+              {result.oauth_clients.map((client) => (
+                <tr key={client.client_id}>
+                  <td className="mono">{client.client_id}</td>
+                  <td className="mono">{client.client_secret}</td>
+                  <td className="mono">{client.access_token}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </section>
   );
 }

@@ -20,7 +20,8 @@ class AppVersionLabel extends StatelessWidget {
         return Text(
           'Версия ${info.version}$build',
           textAlign: align,
-          style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+          style: theme.textTheme.bodySmall
+              ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
         );
       },
     );

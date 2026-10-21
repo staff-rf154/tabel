@@ -34,7 +34,8 @@ class DeviceContext {
         if (permission == LocationPermission.denied) {
           permission = await Geolocator.requestPermission();
         }
-        if (permission == LocationPermission.whileInUse || permission == LocationPermission.always) {
+        if (permission == LocationPermission.whileInUse ||
+            permission == LocationPermission.always) {
           position = await Geolocator.getCurrentPosition(
             desiredAccuracy: LocationAccuracy.high,
             timeLimit: const Duration(seconds: 8),
@@ -73,7 +74,9 @@ class DeviceContext {
       appVersion = null;
     }
 
-    final age = position == null ? null : DateTime.now().difference(position.timestamp).inSeconds;
+    final age = position == null
+        ? null
+        : DateTime.now().difference(position.timestamp).inSeconds;
     return DeviceContext(
       lat: position?.latitude,
       lon: position?.longitude,

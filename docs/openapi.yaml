@@ -7,10 +7,12 @@ info:
     client_credentials для внешних систем выгрузки и интеграции с 1С.
     Часовой пояс бизнес-логики, графиков и отчётов — Asia/Novosibirsk (UTC+7).
     Время в API передаётся в RFC3339; серверные метки содержат часовой пояс.
-  version: 1.1.0
+  version: 1.3.0
   contact:
     name: Табель
 servers:
+  - url: https://srv.staff-rf.ru/api
+    description: Production (HTTPS)
   - url: http://localhost:8080
     description: Локальная разработка
 tags:
@@ -30,6 +32,8 @@ tags:
     description: Делегирование прав оператора
   - name: notifications
     description: Уведомления
+  - name: mobile
+    description: Мобильное приложение (серверная конфигурация интерфейса и статистика сотрудника)
   - name: audit
     description: Журнал аудита
   - name: admin
@@ -96,7 +100,7 @@ paths:
   /setup/test-db:
     post:
       tags: [setup]
-      summary: Проверить подключение к PostgreSQL
+      summary: Проверить подключение, создать БД и структуру при необходимости
       operationId: testDatabase
       security: []
       requestBody:
@@ -110,13 +114,15 @@ paths:
                 database_url: { type: string, example: "postgres://tabel:secret@pgbouncer:5432/tabel?sslmode=disable" }
       responses:
         "200":
-          description: Подключение успешно
+          description: Подключение успешно, структура БД готова
           content:
             application/json:
               schema:
                 type: object
                 properties:
                   ok: { type: boolean, example: true }
+                  database_created: { type: boolean, example: false }
+                  schema_ready: { type: boolean, example: true }
         "400":
           description: Не удалось подключиться
           content:
@@ -328,6 +334,42 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/UserProfile" }
+
+  /me/monthly-stats:
+    get:
+      tags: [mobile, marks]
+      summary: Статистика сотрудника за текущий календарный месяц
+      description: >-
+        Возвращает количество отработанных дней и минут по сменам, число смен и
+        последние входы сотрудника за календарный месяц (Asia/Novosibirsk).
+      operationId: getMyMonthlyStats
+      responses:
+        "200":
+          description: Статистика за месяц
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MonthlyStats" }
+        "404":
+          description: Пользователь не привязан к сотруднику
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /mobile/bootstrap:
+    get:
+      tags: [mobile]
+      summary: Конфигурация мобильного интерфейса для текущей роли
+      description: >-
+        Сервер формирует навигацию и набор функций для роли пользователя.
+        Клиент сохраняет конфигурацию в защищённом хранилище до выхода из
+        учётной записи. Экраны остаются нативными, JSON управляет их составом.
+      operationId: getMobileBootstrap
+      responses:
+        "200":
+          description: Конфигурация интерфейса
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MobileBootstrap" }
 
   /me/qr:
     get:
@@ -672,13 +714,19 @@ paths:
       tags: [admin]
       summary: Графики работы
       description: >
-        График задаёт паттерн (5/2, 2/2, custom), рабочие дни 1–7, время начала
+        График задаёт паттерн (5/2, 2/2, 4/2, 1/2, custom), рабочие дни 1–7, время начала
         и окончания, период действия. Локальное время и границы смен считаются
         в Asia/Novosibirsk (UTC+7). Активный график — запись, действующая на
         текущую дату; при отсутствии используется 5/2, 09:00–18:00.
       operationId: listSchedules
       parameters:
         - { name: employee_id, in: query, schema: { type: string, format: uuid } }
+        - name: q
+          in: query
+          description: Поиск по табельному номеру или ФИО сотрудника
+          schema: { type: string }
+        - { name: limit, in: query, schema: { type: integer, default: 50, maximum: 500 } }
+        - { name: offset, in: query, schema: { type: integer, default: 0 } }
       responses:
         "200":
           description: Графики
@@ -769,7 +817,7 @@ paths:
       tags: [admin]
       summary: Импорт графиков из CSV (предпросмотр или сохранение)
       description: >
-        Колонки: employee_number (обязательна), pattern_type (5/2, 2/2, custom),
+        Колонки: employee_number (обязательна), pattern_type (5/2, 2/2, 4/2, 1/2, custom),
         workdays (1-7; диапазоны 1-5, списки 1,3,5), start_time, end_time,
         valid_from (алиас date_from), valid_to (алиас date_to). По умолчанию:
         pattern_type=5/2, workdays=1-5, start_time=09:00, end_time=18:00,
@@ -926,15 +974,48 @@ paths:
   /admin/qr/paper/{id}/pdf:
     get:
       tags: [qr]
-      summary: Печатная форма PDF/A бумажного QR
-      description: PDF с XMP-метаданными PDF/A-1b, встроенными Unicode-шрифтами,
-        QR-кодом, данными сотрудника, сроком действия и инструкцией.
+      summary: Печатная форма бумажного пропуска 85,6 × 53,98 мм
+      description: PDF-карточка 85,6 × 53,98 мм с XMP-метаданными, встроенными
+        Unicode-шрифтами, QR-кодом, ФИО, должностью, отделом, местом под фото
+        и названием компании из настроек.
       operationId: getPaperQrPdf
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
         "200":
           description: PDF-документ
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+
+  /admin/qr/passes/pdf:
+    post:
+      tags: [qr]
+      summary: Массовая печать бумажных пропусков
+      description: Формирует PDF с карточками 85,6 × 53,98 мм по 8 штук на листе A4.
+        Если у сотрудника есть действующий бумажный QR, он используется повторно.
+      operationId: printPaperPasses
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [employee_ids]
+              properties:
+                employee_ids:
+                  type: array
+                  minItems: 1
+                  maxItems: 500
+                  items: { type: string, format: uuid }
+      responses:
+        "200":
+          description: PDF-документ
+          headers:
+            X-Passes-Printed:
+              schema: { type: integer }
+            X-Passes-Skipped:
+              schema: { type: integer }
           content:
             application/pdf:
               schema: { type: string, format: binary }
@@ -1147,6 +1228,43 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/OAuthClientCreated" }
+  /admin/oauth/clients/{id}:
+    patch:
+      tags: [admin, oauth]
+      summary: Включить или отключить OAuth-клиента
+      description: При отключении все выданные клиенту access-токены отзываются.
+      operationId: updateOAuthClient
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [is_active]
+              properties:
+                is_active: { type: boolean }
+      responses:
+        "200":
+          description: Состояние изменено
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OAuthClient" }
+        "404":
+          description: Клиент не найден
+    delete:
+      tags: [admin, oauth]
+      summary: Удалить OAuth-клиента
+      description: Удаляются клиент, его access-токены и IP-whitelist.
+      operationId: deleteOAuthClient
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "204": { description: Удалён }
+        "404":
+          description: Клиент не найден
+
   /admin/oauth/clients/{id}/rotate:
     post:
       tags: [admin, oauth]
@@ -1205,6 +1323,7 @@ paths:
       operationId: listUsers
       parameters:
         - { name: role, in: query, schema: { type: string, enum: [employee, operator, admin, shift_lead, director, hr] } }
+        - { name: q, in: query, schema: { type: string, minLength: 3 }, description: Поиск по логину, ФИО или табельному номеру; применяется от 3 символов }
         - { name: limit, in: query, schema: { type: integer, default: 50, maximum: 500 } }
         - { name: offset, in: query, schema: { type: integer, default: 0 } }
       responses:
@@ -1308,6 +1427,14 @@ paths:
                 properties:
                   main_admin_email: { type: string, format: email }
                   support_phone: { type: string }
+                  support_email: { type: string, format: email }
+                  company_name: { type: string }
+                  company_address: { type: string }
+                  company_inn: { type: string }
+                  website: { type: string }
+                  paper_qr_valid_days: { type: integer, minimum: 1, maximum: 365 }
+                  default_office_radius_m: { type: integer, minimum: 10, maximum: 10000 }
+                  pass_footer: { type: string }
     put:
       tags: [admin]
       summary: Изменить профиль главного администратора
@@ -1321,6 +1448,14 @@ paths:
               properties:
                 main_admin_email: { type: string, format: email }
                 support_phone: { type: string }
+                support_email: { type: string, format: email }
+                company_name: { type: string, maxLength: 200 }
+                company_address: { type: string, maxLength: 300 }
+                company_inn: { type: string, maxLength: 12 }
+                website: { type: string, maxLength: 200 }
+                paper_qr_valid_days: { type: integer, minimum: 1, maximum: 365 }
+                default_office_radius_m: { type: integer, minimum: 10, maximum: 10000 }
+                pass_footer: { type: string, maxLength: 200 }
       responses:
         "200":
           description: Обновлено
@@ -1331,6 +1466,210 @@ paths:
                 properties:
                   main_admin_email: { type: string, format: email }
                   support_phone: { type: string }
+                  support_email: { type: string, format: email }
+                  company_name: { type: string }
+                  company_address: { type: string }
+                  company_inn: { type: string }
+                  website: { type: string }
+                  paper_qr_valid_days: { type: integer }
+                  default_office_radius_m: { type: integer }
+                  pass_footer: { type: string }
+
+  /admin/system-settings:
+    get:
+      tags: [admin]
+      summary: Системные подключения и служебные параметры
+      description: >-
+        Возвращает параметры SQLite-хранилища настроек, порты сервисов,
+        PgBouncer, S3, SSL, статистику демо-базы и рекомендации PostgreSQL.
+        Пароли в строках подключения маскируются, секреты S3, пароль Redis
+        и приватный ключ QR не возвращаются. Доступно главному администратору.
+      operationId: getSystemSettings
+      responses:
+        "200":
+          description: Системные настройки
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SystemSettings" }
+    put:
+      tags: [admin]
+      summary: Изменить подключения и параметры инфраструктуры
+      description: >-
+        Перед сохранением проверяет PostgreSQL и Redis. Можно передать порты,
+        PgBouncer, S3, SSL и прямое подключение PostgreSQL. Пустые поля
+        не изменяются. Новые подключения и порты применяются после перезапуска
+        backend и контейнеров.
+      operationId: updateSystemSettings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SystemConnectionsInput" }
+      responses:
+        "200":
+          description: Сохранено
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: "#/components/schemas/SystemSettings" }
+                  - type: object
+                    properties:
+                      restart_required: { type: boolean }
+        "400": { description: Не удалось подключиться к PostgreSQL или Redis }
+
+  /admin/system-settings/test:
+    post:
+      tags: [admin]
+      summary: Проверить подключения PostgreSQL, Redis, S3 и SSL
+      description: >-
+        Проверяет переданные параметры, а для пустых полей использует текущие.
+        PostgreSQL при необходимости создаётся, миграции применяются.
+        Дополнительно проверяются S3 endpoint и SSL-сертификат, если они заданы.
+      operationId: testSystemSettings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SystemConnectionsInput" }
+      responses:
+        "200":
+          description: Подключения доступны
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [ok] }
+                  database: { type: string, enum: [ok] }
+                  redis: { type: string, enum: [ok] }
+                  database_created: { type: boolean }
+        "400": { description: Ошибка подключения }
+
+  /admin/system-settings/test-ssl:
+    post:
+      tags: [admin]
+      summary: Проверить SSL-сертификат
+      description: Проверяет пути сертификата и ключа, срок действия и соответствие ключа.
+      operationId: testSystemSSL
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SSLInput" }
+      responses:
+        "200":
+          description: Сертификат доступен
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SSLStatus" }
+        "400": { description: Сертификат не найден или недействителен }
+
+  /admin/system-settings/test-s3:
+    post:
+      tags: [admin]
+      summary: Проверить доступность S3
+      description: Выполняет запрос к endpoint S3. Ответ 403 также считается доступностью сервиса.
+      operationId: testSystemS3
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/S3Input" }
+      responses:
+        "200":
+          description: S3 доступен
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [ok] }
+                  endpoint: { type: string }
+                  http_status: { type: integer }
+        "400": { description: S3 недоступен }
+
+  /admin/system-settings/db-scripts:
+    get:
+      tags: [admin]
+      summary: Список SQL-скриптов установки PostgreSQL
+      description: Скрипты генерируются из встроенных миграций приложения.
+      operationId: listDatabaseScripts
+      responses:
+        "200":
+          description: Список скриптов
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/DatabaseScript" }
+
+  /admin/system-settings/db-scripts.zip:
+    get:
+      tags: [admin]
+      summary: Скачать все SQL-скрипты архивом
+      operationId: downloadDatabaseScriptsZip
+      responses:
+        "200":
+          description: ZIP-архив скриптов
+          content:
+            application/zip:
+              schema: { type: string, format: binary }
+
+  /admin/system-settings/db-scripts/{name}:
+    get:
+      tags: [admin]
+      summary: Скачать SQL-скрипт
+      operationId: downloadDatabaseScript
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Текстовый скрипт
+          content:
+            text/plain:
+              schema: { type: string }
+        "404": { description: Скрипт не найден }
+
+  /admin/system-settings/settings-db:
+    get:
+      tags: [admin]
+      summary: Скачать базу настроек SQLite
+      description: >-
+        Возвращает согласованный снимок settings.db через VACUUM INTO.
+        Файл содержит зашифрованные секреты; храните его в защищённом месте.
+      operationId: downloadSettingsDatabase
+      responses:
+        "200":
+          description: Снимок SQLite
+          content:
+            application/vnd.sqlite3:
+              schema: { type: string, format: binary }
+
+  /admin/system-settings/migrate-postgres:
+    post:
+      tags: [admin]
+      summary: Перенести базу на другой PostgreSQL
+      description: >-
+        Использует прямое подключение текущей базы, pg_dump в custom-формате,
+        pg_restore с --clean --if-exists --single-transaction и проверку количества
+        сотрудников и отметок. Для подтверждения требуется строка MIGRATE.
+        Переключение приложения выполняется только при switch_connection=true.
+      operationId: migratePostgres
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PostgresMigrationInput" }
+      responses:
+        "200":
+          description: Перенос выполнен
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PostgresMigrationResult" }
+        "400": { description: Неверные параметры или подтверждение }
+        "409": { description: Другой перенос уже выполняется }
+        "502": { description: Ошибка pg_dump или pg_restore }
 
   /admin/audit:
     get:
@@ -1341,6 +1680,8 @@ paths:
         - { name: action, in: query, schema: { type: string } }
         - { name: entity_type, in: query, schema: { type: string } }
         - { name: entity_id, in: query, schema: { type: string } }
+        - { name: actor_user_id, in: query, schema: { type: string, format: uuid } }
+        - { name: ip, in: query, schema: { type: string } }
         - { name: from, in: query, schema: { type: string, format: date-time } }
         - { name: to, in: query, schema: { type: string, format: date-time } }
         - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 1000 } }
@@ -1613,6 +1954,26 @@ paths:
           content:
             application/json:
               schema: { type: object, properties: { seeded: { type: integer } } }
+  /admin/demo/reset:
+    post:
+      tags: [admin]
+      summary: Полностью заменить базу демонстрационным набором
+      description: >-
+        Удаляет сотрудников, пользователей (кроме главного администратора),
+        отметки, смены, графики, QR, офисы, уведомления, делегирования,
+        OAuth-клиентов и журнал аудита, затем создаёт 100 сотрудников
+        с номерами н-00000001…н-00000100, 4 графика, данные за 3 месяца,
+        QR для всех, демонстрационные уведомления, делегирования, аудит
+        и OAuth-клиентов. Пароль всех пользователей — 1й2ц3у.
+        Логины сотрудников формируются из ФИО как ФамилияИ; если логин занят,
+        добавляются следующие буквы имени (например, ИвановИв, ИвановИва).
+      operationId: resetDemo
+      responses:
+        "200":
+          description: Демонстрационная база заменена
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DemoResetResult" }
   /admin/demo/clear:
     post:
       tags: [admin]
@@ -1703,6 +2064,7 @@ paths:
         - { name: to, in: query, schema: { type: string, format: date-time } }
         - { name: employee_id, in: query, schema: { type: string, format: uuid } }
         - { name: employee_ids, in: query, schema: { type: string }, description: "Список UUID через запятую" }
+        - { name: employees, in: query, schema: { type: string }, description: "ФИО или табельный номер через запятую" }
         - { name: position, in: query, schema: { type: string } }
         - { name: format, in: query, schema: { type: string, enum: [json, csv] } }
       responses:
@@ -1718,6 +2080,7 @@ paths:
         - { name: to, in: query, schema: { type: string, format: date-time } }
         - { name: employee_id, in: query, schema: { type: string, format: uuid } }
         - { name: employee_ids, in: query, schema: { type: string } }
+        - { name: employees, in: query, schema: { type: string }, description: "ФИО или табельный номер через запятую" }
         - { name: position, in: query, schema: { type: string } }
         - { name: format, in: query, schema: { type: string, enum: [json, csv] } }
       responses:
@@ -1733,10 +2096,92 @@ paths:
         - { name: to, in: query, schema: { type: string, format: date-time } }
         - { name: employee_id, in: query, schema: { type: string, format: uuid } }
         - { name: employee_ids, in: query, schema: { type: string } }
+        - { name: employees, in: query, schema: { type: string }, description: "ФИО или табельный номер через запятую" }
         - { name: position, in: query, schema: { type: string } }
         - { name: format, in: query, schema: { type: string, enum: [json, csv] } }
       responses:
         "200": { description: Сводка или CSV }
+        "403": { description: Недостаточно прав }
+
+  /reports/worked-time:
+    get:
+      tags: [reports]
+      summary: Сводный график отработанного времени за период
+      operationId: reportWorkedTime
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: employee_id, in: query, schema: { type: string, format: uuid } }
+        - { name: employee_ids, in: query, schema: { type: string }, description: "Список UUID через запятую" }
+        - { name: employees, in: query, schema: { type: string }, description: "ФИО или табельный номер через запятую" }
+        - { name: position, in: query, schema: { type: string } }
+        - { name: format, in: query, schema: { type: string, enum: [json, csv] } }
+      responses:
+        "200": { description: Сводка по сотрудникам с ФИО, должностью и отделом }
+        "403": { description: Недостаточно прав }
+  /reports/first-last:
+    get:
+      tags: [reports]
+      summary: Первый приход и последний выход по сотруднику за каждый день
+      operationId: reportFirstLast
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: employee_id, in: query, schema: { type: string, format: uuid } }
+        - { name: employee_ids, in: query, schema: { type: string } }
+        - { name: employees, in: query, schema: { type: string }, description: "ФИО или табельный номер через запятую" }
+        - { name: position, in: query, schema: { type: string } }
+        - { name: format, in: query, schema: { type: string, enum: [json, csv] } }
+      responses:
+        "200": { description: По каждому сотруднику и дню — первый вход и последний выход }
+        "403": { description: Недостаточно прав }
+  /reports/entries-exits:
+    get:
+      tags: [reports]
+      summary: Входы и выходы с группировкой по сотруднику
+      operationId: reportEntriesExits
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: employee_id, in: query, schema: { type: string, format: uuid } }
+        - { name: employee_ids, in: query, schema: { type: string } }
+        - { name: employees, in: query, schema: { type: string }, description: "ФИО или табельный номер через запятую" }
+        - { name: position, in: query, schema: { type: string } }
+        - { name: format, in: query, schema: { type: string, enum: [json, csv] } }
+      responses:
+        "200": { description: Пары вход/выход по сотрудникам }
+        "403": { description: Недостаточно прав }
+  /reports/daily:
+    get:
+      tags: [reports]
+      summary: Приход, уход и время присутствия с разбивкой по дням
+      operationId: reportDaily
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: employee_id, in: query, schema: { type: string, format: uuid } }
+        - { name: employee_ids, in: query, schema: { type: string } }
+        - { name: employees, in: query, schema: { type: string }, description: "ФИО или табельный номер через запятую" }
+        - { name: position, in: query, schema: { type: string } }
+        - { name: format, in: query, schema: { type: string, enum: [json, csv] } }
+      responses:
+        "200": { description: Дневные строки присутствия и отработанного времени }
+        "403": { description: Недостаточно прав }
+  /reports/timesheet:
+    get:
+      tags: [reports]
+      summary: Табель учёта рабочего времени Т-13
+      operationId: reportTimesheet
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: employee_id, in: query, schema: { type: string, format: uuid } }
+        - { name: employee_ids, in: query, schema: { type: string } }
+        - { name: employees, in: query, schema: { type: string }, description: "ФИО или табельный номер через запятую" }
+        - { name: position, in: query, schema: { type: string } }
+        - { name: format, in: query, schema: { type: string, enum: [json, csv] } }
+      responses:
+        "200": { description: Табель Т-13 с днями периода, явками и часами }
         "403": { description: Недостаточно прав }
 
 components:
@@ -1760,6 +2205,173 @@ components:
       schema: { type: string, format: uuid }
       description: Ключ идемпотентности операции
   schemas:
+    SystemSettings:
+      type: object
+      properties:
+        database_url:
+          type: string
+          description: Строка подключения PostgreSQL с замаскированным паролем
+        database_url_set: { type: boolean }
+        database_direct_url:
+          type: string
+          description: Прямое подключение PostgreSQL с замаскированным паролем
+        database_direct_url_set: { type: boolean }
+        redis_addr: { type: string }
+        redis_password_set: { type: boolean }
+        qr_private_key_set: { type: boolean }
+        qr_public_key: { type: string, description: PEM публичного ключа QR }
+        settings_db_path: { type: string }
+        settings_db_size: { type: integer, format: int64 }
+        app_env: { type: string }
+        service_ports: { $ref: "#/components/schemas/ServicePorts" }
+        pgbouncer: { $ref: "#/components/schemas/PgBouncerSettings" }
+        s3: { $ref: "#/components/schemas/S3Settings" }
+        ssl: { $ref: "#/components/schemas/SSLStatus" }
+        demo: { $ref: "#/components/schemas/DemoDatabaseStatus" }
+        postgres_recommendations:
+          type: array
+          items: { $ref: "#/components/schemas/PostgresRecommendation" }
+    ServicePorts:
+      type: object
+      properties:
+        backend: { type: integer, minimum: 1, maximum: 65535 }
+        admin: { type: integer, minimum: 1, maximum: 65535 }
+        operator: { type: integer, minimum: 1, maximum: 65535 }
+        reports: { type: integer, minimum: 1, maximum: 65535 }
+        postgres: { type: integer, minimum: 1, maximum: 65535 }
+        pgbouncer: { type: integer, minimum: 1, maximum: 65535 }
+        redis: { type: integer, minimum: 1, maximum: 65535 }
+        s3_api: { type: integer, minimum: 1, maximum: 65535 }
+        s3_admin: { type: integer, minimum: 1, maximum: 65535 }
+        https: { type: integer, minimum: 1, maximum: 65535 }
+    PgBouncerSettings:
+      type: object
+      properties:
+        host: { type: string }
+        port: { type: integer, minimum: 1, maximum: 65535 }
+        pool_mode: { type: string, enum: [transaction, session, statement] }
+        max_client_conn: { type: integer, minimum: 1 }
+        default_pool_size: { type: integer, minimum: 1 }
+        auth_type: { type: string }
+    S3Settings:
+      type: object
+      properties:
+        endpoint: { type: string }
+        region: { type: string }
+        bucket: { type: string }
+        access_key_set: { type: boolean }
+        secret_key_set: { type: boolean }
+        use_ssl: { type: boolean }
+        path_style: { type: boolean }
+    S3Input:
+      type: object
+      properties:
+        endpoint: { type: string }
+        region: { type: string }
+        bucket: { type: string }
+        access_key: { type: string }
+        secret_key: { type: string }
+        use_ssl: { type: boolean }
+        path_style: { type: boolean }
+    SSLStatus:
+      type: object
+      properties:
+        cert_path: { type: string }
+        key_path: { type: string }
+        ready: { type: boolean }
+        subject: { type: string }
+        issuer: { type: string }
+        not_after: { type: string, format: date-time }
+        days_left: { type: integer }
+        dns_names:
+          type: array
+          items: { type: string }
+        error: { type: string }
+        expiring_soon: { type: boolean }
+    SSLInput:
+      type: object
+      properties:
+        cert_path: { type: string }
+        key_path: { type: string }
+    DemoDatabaseStatus:
+      type: object
+      properties:
+        employees: { type: integer, format: int64 }
+        marks: { type: integer, format: int64 }
+        qr_tokens: { type: integer, format: int64 }
+        last_reset: { type: string }
+    PostgresRecommendation:
+      type: object
+      properties:
+        name: { type: string }
+        value: { type: string }
+        note: { type: string }
+    DatabaseScript:
+      type: object
+      properties:
+        name: { type: string }
+        title: { type: string }
+        description: { type: string }
+        size: { type: integer }
+    PostgresMigrationInput:
+      type: object
+      required: [target_url, confirm]
+      properties:
+        target_url: { type: string, description: Прямое подключение к целевому PostgreSQL }
+        target_runtime_url: { type: string, description: Рабочая строка через PgBouncer; по умолчанию target_url }
+        switch_connection: { type: boolean, default: false }
+        confirm: { type: string, description: Строка MIGRATE }
+    PostgresMigrationResult:
+      type: object
+      properties:
+        status: { type: string, enum: [migrated] }
+        switched: { type: boolean }
+        employees: { type: integer, format: int64 }
+        marks: { type: integer, format: int64 }
+        target_url: { type: string }
+        restart_required: { type: boolean }
+    SystemConnectionsInput:
+      type: object
+      properties:
+        database_url:
+          type: string
+          description: Новая строка подключения PostgreSQL; пустая — не изменять
+        database_direct_url:
+          type: string
+          description: Новое прямое подключение для pg_dump/pg_restore; пустое — не изменять
+        redis_addr:
+          type: string
+          description: Адрес Redis host:port; пустой — не изменять
+        redis_password:
+          type: string
+          description: Новый пароль Redis; пустой — не изменять
+        service_ports: { $ref: "#/components/schemas/ServicePorts" }
+        pgbouncer: { $ref: "#/components/schemas/PgBouncerSettings" }
+        s3: { $ref: "#/components/schemas/S3Input" }
+        ssl: { $ref: "#/components/schemas/SSLInput" }
+    DemoResetResult:
+      type: object
+      properties:
+        employees: { type: integer }
+        users: { type: integer }
+        schedules: { type: integer }
+        shifts: { type: integer }
+        marks: { type: integer }
+        offices: { type: integer }
+        notifications: { type: integer }
+        delegations: { type: integer }
+        audit_records: { type: integer }
+        qr_static: { type: integer }
+        qr_paper: { type: integer }
+        demo_password: { type: string }
+        oauth_clients:
+          type: array
+          items:
+            type: object
+            properties:
+              client_id: { type: string }
+              client_secret: { type: string }
+              access_token: { type: string }
     MobileBuild:
       type: object
       properties:
@@ -1812,12 +2424,57 @@ components:
       type: object
       properties:
         id: { type: string, format: uuid }
-        role: { type: string, enum: [employee, operator, admin] }
+        role: { type: string, enum: [employee, operator, admin, shift_lead, director, hr] }
         login: { type: string }
         employee_id: { type: string, format: uuid, nullable: true }
         full_name: { type: string, nullable: true }
         position: { type: string, nullable: true }
         employee_number: { type: string, nullable: true }
+    MobileBootstrap:
+      type: object
+      required: [version, config_version, generated_at, role, role_title, shell, features, navigation, policy]
+      properties:
+        version: { type: integer, example: 1 }
+        config_version: { type: integer, example: 1 }
+        generated_at: { type: string, format: date-time }
+        role: { type: string, enum: [employee, operator, admin, shift_lead, director, hr] }
+        role_title: { type: string, example: Сотрудник }
+        shell:
+          type: string
+          enum: [employee, operator, management, unsupported]
+          description: Нативный экранный каркас приложения для роли
+        features:
+          type: object
+          additionalProperties: { type: boolean }
+          example: { my_qr: true, monthly_stats: true, profile: true }
+        navigation:
+          type: array
+          items:
+            type: object
+            required: [key, title, icon]
+            properties:
+              key: { type: string, example: home }
+              title: { type: string, example: Мои отметки }
+              icon: { type: string, example: badge }
+        policy:
+          type: object
+          properties:
+            cache_until_logout: { type: boolean, example: true }
+            refresh_after_sec: { type: integer, example: 86400 }
+    MonthlyStats:
+      type: object
+      properties:
+        month: { type: string, example: "2026-10" }
+        month_start: { type: string, format: date-time }
+        month_end: { type: string, format: date-time }
+        days_worked: { type: integer, example: 12 }
+        shifts_total: { type: integer, example: 13 }
+        shifts_closed: { type: integer, example: 12 }
+        worked_minutes: { type: integer, example: 7320 }
+        overtime_shifts: { type: integer, example: 1 }
+        last_check_ins:
+          type: array
+          items: { $ref: "#/components/schemas/Mark" }
     User:
       type: object
       properties:
@@ -1885,7 +2542,7 @@ components:
           type: string
           format: uuid
           description: Обязателен при создании; при изменении игнорируется.
-        pattern_type: { type: string, enum: ["5/2", "2/2", custom] }
+        pattern_type: { type: string, enum: ["5/2", "2/2", "4/2", "1/2", custom] }
         workdays: { type: array, items: { type: integer, minimum: 1, maximum: 7 } }
         start_time: { type: string, example: "09:00" }
         end_time: { type: string, example: "18:00" }
@@ -1897,13 +2554,16 @@ components:
       properties:
         id: { type: string, format: uuid }
         employee_id: { type: string, format: uuid }
-        pattern_type: { type: string, enum: ["5/2", "2/2", custom] }
+        pattern_type: { type: string, enum: ["5/2", "2/2", "4/2", "1/2", custom] }
         workdays: { type: array, items: { type: integer, minimum: 1, maximum: 7 } }
         start_time: { type: string, example: "09:00" }
         end_time: { type: string, example: "18:00" }
         valid_from: { type: string, format: date }
         valid_to: { type: string, format: date, nullable: true }
         is_active: { type: boolean }
+        source_file: { type: string, nullable: true }
+        employee_number: { type: string, description: Заполняется в списке графиков }
+        employee_full_name: { type: string, description: Заполняется в списке графиков }
     MarkCreate:
       type: object
       required: [qr_token, client_type]
